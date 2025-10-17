@@ -41,7 +41,7 @@ htmlcov/
 .ipynb_checkpoints/
 
 
-.streamlit/secrets.toml        # keep secrets out of git!
+.streamlit/secrets.toml        
 .streamlit/*credentials*
 
 
