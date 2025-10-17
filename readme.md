@@ -1,6 +1,6 @@
-## Outlier Visualizer
+# Outlier Visualizer
 
-# Quickstart
+## Quickstart
 
 ```bash
 # 1) Clone the repository
