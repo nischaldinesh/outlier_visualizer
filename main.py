@@ -22,6 +22,8 @@ except Exception:
     MultiPolygon = None
 
 
+
+
 def auto_eps(X2d: np.ndarray, k: int = 10, q: float = 95.0) -> float:
     k = min(k, len(X2d) - 1) if len(X2d) > 1 else 1
     if k < 1:
@@ -34,18 +36,15 @@ def auto_eps(X2d: np.ndarray, k: int = 10, q: float = 95.0) -> float:
         eps = float(np.median(kth[kth > 0])) if np.any(kth > 0) else 0.5
     return eps
 
+
 def clamp_perplexity(perp: float, n: int) -> float:
     if n <= 3:
         return 1.0
     upper = max(2.0, (n - 1) / 3.0)
     return float(np.clip(perp, 2.0, upper))
 
-def tsne_embed(
-    X_std: np.ndarray,
-    random_state: int,
-    perplexity: float,
-    metric: str,
-) -> np.ndarray:
+
+def tsne_embed(X_std: np.ndarray, random_state: int, perplexity: float, metric: str) -> np.ndarray:
     import inspect
     n = X_std.shape[0]
     perp = clamp_perplexity(perplexity, n)
@@ -79,9 +78,11 @@ def tsne_embed(
             pass
     return tsne.fit_transform(X_std)
 
+
 def convex_hull_poly(points: np.ndarray) -> np.ndarray:
     hull = ConvexHull(points)
     return points[hull.vertices]
+
 
 def alpha_shape_polygon(points: np.ndarray, alpha: Optional[float] = None):
     if alphashape is None:
@@ -103,6 +104,7 @@ def alpha_shape_polygon(points: np.ndarray, alpha: Optional[float] = None):
         hull_pts = convex_hull_poly(points)
         return geom.Polygon(hull_pts)
 
+
 def polygon_area_perimeter(poly) -> Tuple[float, float, int]:
     if MultiPolygon and isinstance(poly, MultiPolygon):
         poly = unary_union(poly)
@@ -114,6 +116,7 @@ def polygon_area_perimeter(poly) -> Tuple[float, float, int]:
     elif poly.geom_type == "MultiPolygon":
         holes = sum(len(g.interiors) for g in poly.geoms)
     return area, perim, holes
+
 
 def shape_metrics_2d(points: np.ndarray, alpha: Optional[float] = None) -> Dict[str, float]:
     try:
@@ -149,6 +152,7 @@ def shape_metrics_2d(points: np.ndarray, alpha: Optional[float] = None) -> Dict[
         "perim_hull": float(hull_perim),
     }
 
+
 def aspect_ratio_from_cov(points: np.ndarray) -> float:
     if points.shape[0] < 2:
         return 1.0
@@ -157,6 +161,7 @@ def aspect_ratio_from_cov(points: np.ndarray) -> float:
     vals = np.linalg.eigvals(cov).real
     vals = np.clip(vals, 1e-12, None)
     return float(np.sqrt(vals.max() / vals.min()))
+
 
 def classify_shape(solidity: float, aspect_ratio: float) -> str:
     if solidity < 0.85:
@@ -167,6 +172,20 @@ def classify_shape(solidity: float, aspect_ratio: float) -> str:
         return "elliptical"
     return "elongated"
 
+
+def classify_density(d):
+    if d > 15:
+        return "Extremely Dense"
+    elif d > 8:
+        return "Dense"
+    elif d > 3:
+        return "Moderate"
+    elif d > 1:
+        return "Sparse"
+    else:
+        return "Very Sparse"
+
+
 def build_groups(labels_array):
     groups = {}
     for i, cid in enumerate(labels_array):
@@ -176,9 +195,9 @@ def build_groups(labels_array):
     return groups
 
 
+# -------------------- Streamlit UI --------------------
 
 st.set_page_config(page_title="Comparative Analytical Framework", layout="wide")
-
 
 st.markdown("""
 <style>
@@ -190,7 +209,6 @@ h1, h2, h3 { margin-top: 0.25rem; }
 
 st.title("Comparative Analytical Framework for Outlier Detection Algorithms")
 
-
 status = st.empty()
 if "status_msg" not in st.session_state:
     st.session_state.status_msg = "Upload a CSV to begin."
@@ -198,7 +216,7 @@ status.info(st.session_state.status_msg)
 
 with st.sidebar:
     st.header("Upload & Settings")
-    file = st.file_uploader("Please uplaod a CSV file", type=["csv"])
+    file = st.file_uploader("Please upload a CSV file", type=["csv"])
     limit = st.number_input("Row limit (0 = all)", min_value=0, value=10000, step=1000)
 
     st.subheader("Visualization (t-SNE)")
@@ -218,10 +236,8 @@ with st.sidebar:
 if file is None:
     st.stop()
 
-
 st.session_state.status_msg = "Processing..."
 status.warning(st.session_state.status_msg)
-
 
 raw = pd.read_csv(file)
 if limit and limit > 0:
@@ -235,24 +251,16 @@ if X.shape[0] < 3 or X.shape[1] < 1:
     status.error("Not enough usable numeric data after cleaning.")
     st.stop()
 
-
 scaler = StandardScaler()
 X_std = scaler.fit_transform(X.values)
 
-
-X2d = tsne_embed(
-    X_std=X_std,
-    random_state=int(seed),
-    perplexity=float(tsne_perp),
-    metric=tsne_metric,
-)
+X2d = tsne_embed(X_std=X_std, random_state=int(seed), perplexity=float(tsne_perp), metric=tsne_metric)
 
 eps_val = None if db_eps <= 0.0 else float(db_eps)
 if eps_val is None:
     eps_val = auto_eps(X2d, k=10, q=95.0)
-    # st.info(f"Auto-tuned DBSCAN eps = {eps_val:.3f}")
-labels_used = DBSCAN(eps=eps_val, min_samples=int(db_min_samples)).fit_predict(X2d)
 
+labels_used = DBSCAN(eps=eps_val, min_samples=int(db_min_samples)).fit_predict(X2d)
 
 clusters = build_groups(labels_used)
 if not clusters:
@@ -265,36 +273,43 @@ for cid, idxs in clusters.items():
     npts = len(pts)
     if npts < 3:
         shape = "too-small"
+        density_val = 0.0
     else:
         ar = aspect_ratio_from_cov(pts)
         metrics = shape_metrics_2d(pts, alpha=alpha)
         shape = classify_shape(metrics["solidity"], ar)
-    rows.append({"cluster_id": cid, "shape": shape})
 
+        # ----  Cluster density calculation ----
+        area = metrics["area_alpha"]
+        density_val = npts / area if area > 0 else 0.0
+        density_label = classify_density(density_val)
+
+    rows.append({
+        "cluster_id": cid,
+        "shape": shape,
+        "density_val": density_val,
+        "density_label": classify_density(density_val)
+    })
 
 st.session_state.status_msg = "Successful."
 status.success(st.session_state.status_msg)
-
 
 left, right = st.columns([2, 1.2])
 
 with left:
     PALETTE = [
-    "#0072B2", "#E69F00", "#009E73", "#D55E00",
-    "#56B4E9", "#F0E442", "#CC79A7", "#000000",
-    "#4E79A7", "#F28E2B", "#E15759", "#76B7B2",
-    "#59A14F", "#EDC948", "#B07AA1", "#FF9DA7",
-    "#9C755F", "#BAB0AC",
-    "#8DD3C7", "#FFFFB3", "#BEBADA", "#FB8072",
-    "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5",
-    "#D9D9D9", "#BC80BD", "#CCEBC5", "#FFED6F",
-]
+        "#0072B2", "#E69F00", "#009E73", "#D55E00",
+        "#56B4E9", "#F0E442", "#CC79A7", "#000000",
+        "#4E79A7", "#F28E2B", "#E15759", "#76B7B2",
+        "#59A14F", "#EDC948", "#B07AA1", "#FF9DA7",
+        "#9C755F", "#BAB0AC",
+        "#8DD3C7", "#FFFFB3", "#BEBADA", "#FB8072",
+        "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5",
+        "#D9D9D9", "#BC80BD", "#CCEBC5", "#FFED6F",
+    ]
 
-
-  
     all_labels = list(pd.unique(pd.Series(labels_used).astype(str)))
     uniq = [lab for lab in sorted(all_labels) if lab != "-1"]
-
 
     color_map = {lab: PALETTE[i % len(PALETTE)] for i, lab in enumerate(uniq)}
 
@@ -305,39 +320,27 @@ with left:
         fig.add_trace(go.Scattergl(
             x=pts[:, 0], y=pts[:, 1],
             mode="markers",
-            name=lab,
+            name=f"Cluster {lab}",
             marker=dict(size=5, opacity=0.9, color=color_map[lab]),
         ))
 
     fig.update_layout(
-        title="Data Visuilization: Scatter Plot",
+        title="Data Visualization: Scatter Plot",
         xaxis_title="t-SNE-1",
         yaxis_title="t-SNE-2",
         height=700,
-        legend_title="cluster id",
+        legend_title="Cluster ID",
         margin=dict(t=40, r=10, b=10, l=10),
     )
     st.plotly_chart(fig, use_container_width=True)
 
-
 with right:
-    st.subheader("Data characteristics")
-    st.markdown(f"- **Dataset size (after clean):** {X.shape[0]}")
-    # st.markdown(f"- **# DBSCAN clusters (excl. noise):** {len(clusters)}")
+    st.subheader("Data Characteristics Summary")
+    st.markdown(f"- **Dataset size (after cleaning):** {X.shape[0]}")
 
-    counts = Counter(r["shape"] for r in rows)
-    ordered = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
-
-    st.markdown("- **Cluster Shapes:**")
-    md_lines = [f"{i+1}. **{shape.capitalize()}** ({cnt})" for i, (shape, cnt) in enumerate(ordered)]
-    st.markdown("\n".join(md_lines))
-
-  
-    subcol, _ = st.columns([0.6, 0.4])
-    with subcol:
-        with st.expander("Show per-cluster assignments"):
-            mapping_lines = [
-                f"- Cluster **{r['cluster_id']}** → {r['shape']}"
-                for r in sorted(rows, key=lambda x: x["cluster_id"])
-            ]
-            st.markdown("\n".join(mapping_lines))
+    st.markdown("- **Cluster Overview:**")
+    for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
+        st.markdown(
+            f"• Cluster **{r['cluster_id']}** → Shape: **{r['shape']}**, "
+            f"Density: **{r['density_val']:.2f}** ({r['density_label']})"
+        )
