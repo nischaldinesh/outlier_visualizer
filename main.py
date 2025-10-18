@@ -1,6 +1,5 @@
 from collections import Counter
 from typing import Optional, Dict, Any, Tuple
-
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -11,6 +10,7 @@ from sklearn.cluster import DBSCAN
 from sklearn.neighbors import NearestNeighbors
 from sklearn.manifold import TSNE
 from scipy.spatial import ConvexHull
+from scipy.stats import skew, kurtosis, entropy
 
 try:
     import alphashape
@@ -22,7 +22,7 @@ except Exception:
     MultiPolygon = None
 
 
-
+# -------------------- Helper Functions --------------------
 
 def auto_eps(X2d: np.ndarray, k: int = 10, q: float = 95.0) -> float:
     k = min(k, len(X2d) - 1) if len(X2d) > 1 else 1
@@ -48,9 +48,6 @@ def tsne_embed(X_std: np.ndarray, random_state: int, perplexity: float, metric: 
     import inspect
     n = X_std.shape[0]
     perp = clamp_perplexity(perplexity, n)
-    if perp != perplexity:
-        st.info(f"Perplexity adjusted from {perplexity} → {perp:.1f} for n={n}")
-
     defaults = dict(
         n_components=2,
         perplexity=perp,
@@ -69,13 +66,7 @@ def tsne_embed(X_std: np.ndarray, random_state: int, perplexity: float, metric: 
             kwargs["method"] = "barnes_hut"
     if "n_iter" in supported:
         kwargs["n_iter"] = 1500
-
     tsne = TSNE(**kwargs)
-    if "n_iter" not in supported and hasattr(tsne, "n_iter"):
-        try:
-            tsne.n_iter = 1500
-        except Exception:
-            pass
     return tsne.fit_transform(X_std)
 
 
@@ -126,31 +117,21 @@ def shape_metrics_2d(points: np.ndarray, alpha: Optional[float] = None) -> Dict[
         hull = ConvexHull(points)
         area_a = float(hull.volume)
         perim_pts = points[hull.vertices]
-        perim_a = 0.0
-        for i in range(len(perim_pts)):
-            a = perim_pts[i]; b = perim_pts[(i + 1) % len(perim_pts)]
-            perim_a += float(np.linalg.norm(a - b))
+        perim_a = sum(float(np.linalg.norm(perim_pts[i] - perim_pts[(i + 1) % len(perim_pts)]))
+                      for i in range(len(perim_pts)))
         holes = 0.0
 
     hull_pts = convex_hull_poly(points)
-    x = hull_pts[:, 0]; y = hull_pts[:, 1]
+    x = hull_pts[:, 0]
+    y = hull_pts[:, 1]
     area_h = 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
-    hull_perim = 0.0
-    for i in range(len(hull_pts)):
-        a = hull_pts[i]; b = hull_pts[(i + 1) % len(hull_pts)]
-        hull_perim += float(np.linalg.norm(a - b))
+    hull_perim = sum(float(np.linalg.norm(hull_pts[i] - hull_pts[(i + 1) % len(hull_pts)]))
+                     for i in range(len(hull_pts)))
 
     solidity = float(area_a / area_h) if area_h > 0 else 0.0
     compactness = float(4.0 * np.pi * area_a / (perim_a ** 2)) if perim_a > 0 else 0.0
-    return {
-        "solidity": float(solidity),
-        "compactness": float(compactness),
-        "holes": float(holes),
-        "area_alpha": float(area_a),
-        "perim_alpha": float(perim_a),
-        "area_hull": float(area_h),
-        "perim_hull": float(hull_perim),
-    }
+    return {"solidity": solidity, "compactness": compactness,
+            "area_alpha": area_a, "area_hull": area_h}
 
 
 def aspect_ratio_from_cov(points: np.ndarray) -> float:
@@ -158,8 +139,7 @@ def aspect_ratio_from_cov(points: np.ndarray) -> float:
         return 1.0
     centered = points - points.mean(axis=0, keepdims=True)
     cov = np.cov(centered, rowvar=False)
-    vals = np.linalg.eigvals(cov).real
-    vals = np.clip(vals, 1e-12, None)
+    vals = np.clip(np.linalg.eigvals(cov).real, 1e-12, None)
     return float(np.sqrt(vals.max() / vals.min()))
 
 
@@ -186,11 +166,28 @@ def classify_density(d):
         return "Very Sparse"
 
 
+def classify_distribution_type(skewness, kurt, entropy_val):
+    if entropy_val > 3.0 and abs(skewness) < 0.5 and abs(kurt - 3) < 1:
+        return "Uniform"
+    elif abs(skewness) < 0.3 and 2.5 <= kurt <= 3.5:
+        return "Normal"
+    elif abs(skewness) > 0.5:
+        return "Skewed"
+    elif 2.0 <= kurt <= 6.0 and entropy_val < 3.0:
+        return "Multimodal"
+    elif kurt > 4.5:
+        return "Heavy-Tailed"
+    elif entropy_val < 2.5:
+        return "Clustered"
+    else:
+        return "Normal"
+
+
 def build_groups(labels_array):
     groups = {}
     for i, cid in enumerate(labels_array):
         if isinstance(cid, (np.integer, int)) and int(cid) == -1:
-            continue  # skip DBSCAN noise
+            continue
         groups.setdefault(str(cid), []).append(i)
     return groups
 
@@ -198,15 +195,6 @@ def build_groups(labels_array):
 # -------------------- Streamlit UI --------------------
 
 st.set_page_config(page_title="Comparative Analytical Framework", layout="wide")
-
-st.markdown("""
-<style>
-main .block-container { padding-top: 0.75rem; padding-bottom: 2rem; }
-[data-testid="stSidebar"] .block-container { padding-top: 0.75rem; }
-h1, h2, h3 { margin-top: 0.25rem; }
-</style>
-""", unsafe_allow_html=True)
-
 st.title("Comparative Analytical Framework for Outlier Detection Algorithms")
 
 status = st.empty()
@@ -233,6 +221,9 @@ with st.sidebar:
     alpha = None if alpha_val == 0.0 else float(alpha_val)
 
 
+selected_dist = "All"
+
+
 if file is None:
     st.stop()
 
@@ -253,7 +244,6 @@ if X.shape[0] < 3 or X.shape[1] < 1:
 
 scaler = StandardScaler()
 X_std = scaler.fit_transform(X.values)
-
 X2d = tsne_embed(X_std=X_std, random_state=int(seed), perplexity=float(tsne_perp), metric=tsne_metric)
 
 eps_val = None if db_eps <= 0.0 else float(db_eps)
@@ -274,21 +264,27 @@ for cid, idxs in clusters.items():
     if npts < 3:
         shape = "too-small"
         density_val = 0.0
+        dist_type = "N/A"
     else:
         ar = aspect_ratio_from_cov(pts)
         metrics = shape_metrics_2d(pts, alpha=alpha)
         shape = classify_shape(metrics["solidity"], ar)
-
-        # ----  Cluster density calculation ----
         area = metrics["area_alpha"]
         density_val = npts / area if area > 0 else 0.0
-        density_label = classify_density(density_val)
+
+        sk = skew(pts[:, 0]) + skew(pts[:, 1])
+        kurt_val = kurtosis(pts[:, 0]) + kurtosis(pts[:, 1])
+        hist, _ = np.histogram(pts[:, 0], bins=10, density=True)
+        p = hist / np.sum(hist)
+        ent = entropy(p, base=2)
+        dist_type = classify_distribution_type(sk, kurt_val, ent)
 
     rows.append({
         "cluster_id": cid,
         "shape": shape,
         "density_val": density_val,
-        "density_label": classify_density(density_val)
+        "density_label": classify_density(density_val),
+        "distribution": dist_type
     })
 
 st.session_state.status_msg = "Successful."
@@ -296,36 +292,39 @@ status.success(st.session_state.status_msg)
 
 left, right = st.columns([2, 1.2])
 
+# ------------------ Plotting Section ------------------
 with left:
+    if not any(r["distribution"] == selected_dist for r in rows) and selected_dist != "All":
+        st.warning(f"No clusters found with '{selected_dist}' distribution.")
+        st.stop()
+
     PALETTE = [
         "#0072B2", "#E69F00", "#009E73", "#D55E00",
         "#56B4E9", "#F0E442", "#CC79A7", "#000000",
         "#4E79A7", "#F28E2B", "#E15759", "#76B7B2",
         "#59A14F", "#EDC948", "#B07AA1", "#FF9DA7",
         "#9C755F", "#BAB0AC",
-        "#8DD3C7", "#FFFFB3", "#BEBADA", "#FB8072",
-        "#80B1D3", "#FDB462", "#B3DE69", "#FCCDE5",
-        "#D9D9D9", "#BC80BD", "#CCEBC5", "#FFED6F",
     ]
-
     all_labels = list(pd.unique(pd.Series(labels_used).astype(str)))
     uniq = [lab for lab in sorted(all_labels) if lab != "-1"]
-
     color_map = {lab: PALETTE[i % len(PALETTE)] for i, lab in enumerate(uniq)}
 
     fig = go.Figure()
-    for lab in uniq:
-        mask = (pd.Series(labels_used).astype(str).values == lab)
+    for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
+        if selected_dist != "All" and r["distribution"] != selected_dist:
+            continue
+        lab = r["cluster_id"]
+        mask = (pd.Series(labels_used).astype(str).values == str(lab))
         pts = X2d[mask]
         fig.add_trace(go.Scattergl(
             x=pts[:, 0], y=pts[:, 1],
             mode="markers",
             name=f"Cluster {lab}",
-            marker=dict(size=5, opacity=0.9, color=color_map[lab]),
+            marker=dict(size=5, opacity=0.9, color=color_map[str(lab)]),
         ))
-
+    title = f"Clusters with '{selected_dist}' Distribution" if selected_dist != "All" else "All Clusters"
     fig.update_layout(
-        title="Data Visualization: Scatter Plot",
+        title=title,
         xaxis_title="t-SNE-1",
         yaxis_title="t-SNE-2",
         height=700,
@@ -334,13 +333,60 @@ with left:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-with right:
-    st.subheader("Data Characteristics Summary")
-    st.markdown(f"- **Dataset size (after cleaning):** {X.shape[0]}")
 
-    st.markdown("- **Cluster Overview:**")
-    for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
-        st.markdown(
-            f"• Cluster **{r['cluster_id']}** → Shape: **{r['shape']}**, "
-            f"Density: **{r['density_val']:.2f}** ({r['density_label']})"
-        )
+
+
+
+# ------------------ Right Panel (Styled Output) ------------------
+with right:
+    st.subheader("Data Characteristics")
+    st.markdown(f"- **Dataset size (after clean):** {X.shape[0]}")
+    st.markdown("\n")
+
+    # ====== CLUSTER SHAPES SUMMARY ======
+    shape_counts = Counter(r["shape"] for r in rows)
+    shape_summary = sorted(shape_counts.items(), key=lambda x: (-x[1], x[0]))
+
+    st.markdown("- **Cluster Shapes:**")
+    for i, (shape, count) in enumerate(shape_summary, 1):
+        st.markdown(f"{i}. **{shape.capitalize()}** ({count})")
+
+    # Dropdown for per-cluster shape assignments
+    with st.expander("Show per-cluster shape assignments"):
+        for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
+            st.markdown(f"- Cluster **{r['cluster_id']}** → {r['shape']}")
+
+    st.markdown("---")
+
+    # ====== CLUSTER DENSITY SUMMARY ======
+    density_counts = Counter(r["density_label"] for r in rows)
+    density_summary = sorted(density_counts.items(), key=lambda x: (-x[1], x[0]))
+
+    st.markdown("- **Cluster Densities:**")
+    for i, (dlabel, count) in enumerate(density_summary, 1):
+        st.markdown(f"{i}. **{dlabel}** ({count})")
+
+    # Dropdown for per-cluster density assignments
+    with st.expander("Show per-cluster density assignments"):
+        for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
+            st.markdown(
+                f"- Cluster **{r['cluster_id']}** → {r['density_label']} "
+                f"(Density: {r['density_val']:.2f})"
+            )
+
+    st.markdown("---")
+
+    # ====== CLUSTER DISTRIBUTION SUMMARY ======
+    dist_counts = Counter(r["distribution"] for r in rows)
+    dist_summary = sorted(dist_counts.items(), key=lambda x: (-x[1], x[0]))
+
+    st.markdown("- **Cluster Distributions:**")
+    for i, (dist, count) in enumerate(dist_summary, 1):
+        st.markdown(f"{i}. **{dist}** ({count})")
+
+    # Dropdown for per-cluster distribution assignments
+    with st.expander("Show per-cluster distribution assignments"):
+        for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
+            st.markdown(
+                f"- Cluster **{r['cluster_id']}** → {r['distribution']}"
+            )
