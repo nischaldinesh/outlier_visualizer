@@ -184,11 +184,10 @@ def classify_distribution_type(skewness, kurt, entropy_val):
 
 
 def build_groups(labels_array):
+    """Include ALL labels; do not skip anything."""
     groups = {}
     for i, cid in enumerate(labels_array):
-        if isinstance(cid, (np.integer, int)) and int(cid) == -1:
-            continue
-        groups.setdefault(str(cid), []).append(i)
+        groups.setdefault(str(int(cid)), []).append(i)
     return groups
 
 
@@ -223,7 +222,6 @@ with st.sidebar:
 
 selected_dist = "All"
 
-
 if file is None:
     st.stop()
 
@@ -250,11 +248,21 @@ eps_val = None if db_eps <= 0.0 else float(db_eps)
 if eps_val is None:
     eps_val = auto_eps(X2d, k=10, q=95.0)
 
-labels_used = DBSCAN(eps=eps_val, min_samples=int(db_min_samples)).fit_predict(X2d)
+# -------- DBSCAN + RELABEL so noise (-1) becomes a normal positive id --------
+labels_used = DBSCAN(eps=eps_val, min_samples=int(db_min_samples)).fit_predict(X2d).astype(int)
 
-clusters = build_groups(labels_used)
+uniq_order = sorted(pd.unique(labels_used))
+if -1 in uniq_order:
+    # move -1 to the end so it gets the last positive id
+    uniq_order = [l for l in uniq_order if l != -1] + [-1]
+
+# 1-based IDs: 1,2,3,... (noise included as a normal number)
+id_map = {old: i for i, old in enumerate(uniq_order, start=1)}
+labels_relabeled = np.array([id_map[l] for l in labels_used], dtype=int)
+
+clusters = build_groups(labels_relabeled)
 if not clusters:
-    status.warning("No clusters found (after excluding DBSCAN noise). Try adjusting DBSCAN or perplexity.")
+    status.warning("No clusters found.")
     st.stop()
 
 rows = []
@@ -280,7 +288,7 @@ for cid, idxs in clusters.items():
         dist_type = classify_distribution_type(sk, kurt_val, ent)
 
     rows.append({
-        "cluster_id": cid,
+        "cluster_id": int(cid),
         "shape": shape,
         "density_val": density_val,
         "density_label": classify_density(density_val),
@@ -305,22 +313,23 @@ with left:
         "#59A14F", "#EDC948", "#B07AA1", "#FF9DA7",
         "#9C755F", "#BAB0AC",
     ]
-    all_labels = list(pd.unique(pd.Series(labels_used).astype(str)))
-    uniq = [lab for lab in sorted(all_labels) if lab != "-1"]
+
+    all_labels = list(pd.unique(pd.Series(labels_relabeled).astype(str)))
+    uniq = sorted(all_labels)  # include ALL (nothing filtered out)
     color_map = {lab: PALETTE[i % len(PALETTE)] for i, lab in enumerate(uniq)}
 
     fig = go.Figure()
     for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
         if selected_dist != "All" and r["distribution"] != selected_dist:
             continue
-        lab = r["cluster_id"]
-        mask = (pd.Series(labels_used).astype(str).values == str(lab))
+        lab = str(r["cluster_id"])
+        mask = (pd.Series(labels_relabeled).astype(str).values == lab)
         pts = X2d[mask]
         fig.add_trace(go.Scattergl(
             x=pts[:, 0], y=pts[:, 1],
             mode="markers",
             name=f"Cluster {lab}",
-            marker=dict(size=5, opacity=0.9, color=color_map[str(lab)]),
+            marker=dict(size=5, opacity=0.9, color=color_map[lab]),
         ))
     title = f"Clusters with '{selected_dist}' Distribution" if selected_dist != "All" else "All Clusters"
     fig.update_layout(
@@ -334,16 +343,14 @@ with left:
     st.plotly_chart(fig, use_container_width=True)
 
 
-
-
-
 # ------------------ Right Panel (Styled Output) ------------------
 with right:
     st.subheader("Data Characteristics")
     st.markdown(f"- **Dataset size (after clean):** {X.shape[0]}")
     st.markdown("\n")
 
-    # ====== CLUSTER SHAPES SUMMARY ======
+
+    
     shape_counts = Counter(r["shape"] for r in rows)
     shape_summary = sorted(shape_counts.items(), key=lambda x: (-x[1], x[0]))
 
@@ -351,14 +358,13 @@ with right:
     for i, (shape, count) in enumerate(shape_summary, 1):
         st.markdown(f"{i}. **{shape.capitalize()}** ({count})")
 
-    # Dropdown for per-cluster shape assignments
     with st.expander("Show per-cluster shape assignments"):
         for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
             st.markdown(f"- Cluster **{r['cluster_id']}** → {r['shape']}")
 
     st.markdown("---")
 
-    # ====== CLUSTER DENSITY SUMMARY ======
+
     density_counts = Counter(r["density_label"] for r in rows)
     density_summary = sorted(density_counts.items(), key=lambda x: (-x[1], x[0]))
 
@@ -366,7 +372,6 @@ with right:
     for i, (dlabel, count) in enumerate(density_summary, 1):
         st.markdown(f"{i}. **{dlabel}** ({count})")
 
-    # Dropdown for per-cluster density assignments
     with st.expander("Show per-cluster density assignments"):
         for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
             st.markdown(
@@ -376,7 +381,7 @@ with right:
 
     st.markdown("---")
 
-    # ====== CLUSTER DISTRIBUTION SUMMARY ======
+    
     dist_counts = Counter(r["distribution"] for r in rows)
     dist_summary = sorted(dist_counts.items(), key=lambda x: (-x[1], x[0]))
 
@@ -384,7 +389,6 @@ with right:
     for i, (dist, count) in enumerate(dist_summary, 1):
         st.markdown(f"{i}. **{dist}** ({count})")
 
-    # Dropdown for per-cluster distribution assignments
     with st.expander("Show per-cluster distribution assignments"):
         for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
             st.markdown(
