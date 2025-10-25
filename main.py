@@ -125,8 +125,6 @@ def shape_metrics_2d(points: np.ndarray, alpha: Optional[float] = None) -> Dict[
     x = hull_pts[:, 0]
     y = hull_pts[:, 1]
     area_h = 0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
-    hull_perim = sum(float(np.linalg.norm(hull_pts[i] - hull_pts[(i + 1) % len(hull_pts)]))
-                     for i in range(len(hull_pts)))
 
     solidity = float(area_a / area_h) if area_h > 0 else 0.0
     compactness = float(4.0 * np.pi * area_a / (perim_a ** 2)) if perim_a > 0 else 0.0
@@ -232,6 +230,7 @@ raw = pd.read_csv(file)
 if limit and limit > 0:
     raw = raw.head(limit)
 
+
 X = raw.select_dtypes(include=[np.number]).copy()
 keep_mask = ~X.isna().any(axis=1)
 X = X.loc[keep_mask]
@@ -240,31 +239,47 @@ if X.shape[0] < 3 or X.shape[1] < 1:
     status.error("Not enough usable numeric data after cleaning.")
     st.stop()
 
+# ---------------- Determine cluster labels ----------------
+label_candidates = ["label", "labels", "class", "Class", "target", "y", "digit"]
+label_col = next((c for c in label_candidates if c in raw.columns), None)
+
+labels_used: np.ndarray
+
+if label_col is not None:
+    provided = raw.loc[keep_mask, label_col]
+    if pd.api.types.is_numeric_dtype(provided):
+        codes = provided.astype("Int64").fillna(-1).astype(int).to_numpy()
+        labels_used = codes
+    else:
+        codes, _ = pd.factorize(provided.astype("string"), sort=True)
+        labels_used = codes
+else:
+    scaler = StandardScaler()
+    X_std_tmp = scaler.fit_transform(X.values)
+    X2d_tmp = tsne_embed(X_std=X_std_tmp, random_state=int(seed), perplexity=float(tsne_perp), metric=tsne_metric)
+    eps_val = None if db_eps <= 0.0 else float(db_eps)
+    if eps_val is None:
+        eps_val = auto_eps(X2d_tmp, k=10, q=95.0)
+    labels_used = DBSCAN(eps=eps_val, min_samples=int(db_min_samples)).fit_predict(X2d_tmp).astype(int)
+
+# Compute t-SNE (final, for plotting & analytics)
 scaler = StandardScaler()
 X_std = scaler.fit_transform(X.values)
 X2d = tsne_embed(X_std=X_std, random_state=int(seed), perplexity=float(tsne_perp), metric=tsne_metric)
 
-eps_val = None if db_eps <= 0.0 else float(db_eps)
-if eps_val is None:
-    eps_val = auto_eps(X2d, k=10, q=95.0)
-
-# -------- DBSCAN + RELABEL so noise (-1) becomes a normal positive id --------
-labels_used = DBSCAN(eps=eps_val, min_samples=int(db_min_samples)).fit_predict(X2d).astype(int)
-
+# -------- RELABEL to 1-based positive IDs for uniform plotting --------
 uniq_order = sorted(pd.unique(labels_used))
 if -1 in uniq_order:
-    # move -1 to the end so it gets the last positive id
     uniq_order = [l for l in uniq_order if l != -1] + [-1]
-
-# 1-based IDs: 1,2,3,... (noise included as a normal number)
 id_map = {old: i for i, old in enumerate(uniq_order, start=1)}
-labels_relabeled = np.array([id_map[l] for l in labels_used], dtype=int)
+labels_relabeled = np.array([id_map[int(l)] for l in labels_used], dtype=int)
 
 clusters = build_groups(labels_relabeled)
 if not clusters:
     status.warning("No clusters found.")
     st.stop()
 
+# ---------------- Per-cluster analysis ----------------
 rows = []
 for cid, idxs in clusters.items():
     pts = X2d[np.array(idxs)]
@@ -283,7 +298,7 @@ for cid, idxs in clusters.items():
         sk = skew(pts[:, 0]) + skew(pts[:, 1])
         kurt_val = kurtosis(pts[:, 0]) + kurtosis(pts[:, 1])
         hist, _ = np.histogram(pts[:, 0], bins=10, density=True)
-        p = hist / np.sum(hist)
+        p = hist / np.sum(hist) if np.sum(hist) > 0 else np.full_like(hist, 1 / len(hist), dtype=float)
         ent = entropy(p, base=2)
         dist_type = classify_distribution_type(sk, kurt_val, ent)
 
@@ -293,6 +308,40 @@ for cid, idxs in clusters.items():
         "density_val": density_val,
         "density_label": classify_density(density_val),
         "distribution": dist_type
+    })
+
+# ---------------- Overall dataset analysis (full X2d) ----------------
+overall = {
+    "shape": "N/A",
+    "solidity": 0.0,
+    "aspect_ratio": 1.0,
+    "density_val": 0.0,
+    "density_label": "N/A",
+    "distribution": "N/A",
+}
+all_pts = X2d
+n_all = all_pts.shape[0]
+if n_all >= 3:
+    ar_all = aspect_ratio_from_cov(all_pts)
+    metrics_all = shape_metrics_2d(all_pts, alpha=alpha)
+    shape_all = classify_shape(metrics_all["solidity"], ar_all)
+    area_all = metrics_all["area_alpha"]
+    density_all = n_all / area_all if area_all > 0 else 0.0
+
+    sk_all = skew(all_pts[:, 0]) + skew(all_pts[:, 1])
+    kurt_all = kurtosis(all_pts[:, 0]) + kurtosis(all_pts[:, 1])
+    hist_all, _ = np.histogram(all_pts[:, 0], bins=10, density=True)
+    p_all = hist_all / np.sum(hist_all) if np.sum(hist_all) > 0 else np.full_like(hist_all, 1 / len(hist_all), dtype=float)
+    ent_all = entropy(p_all, base=2)
+    dist_all = classify_distribution_type(sk_all, kurt_all, ent_all)
+
+    overall.update({
+        "shape": shape_all,
+        "solidity": float(metrics_all["solidity"]),
+        "aspect_ratio": float(ar_all),
+        "density_val": float(density_all),
+        "density_label": classify_density(density_all),
+        "distribution": dist_all,
     })
 
 st.session_state.status_msg = "Successful."
@@ -315,7 +364,7 @@ with left:
     ]
 
     all_labels = list(pd.unique(pd.Series(labels_relabeled).astype(str)))
-    uniq = sorted(all_labels)  # include ALL (nothing filtered out)
+    uniq = sorted(all_labels)
     color_map = {lab: PALETTE[i % len(PALETTE)] for i, lab in enumerate(uniq)}
 
     fig = go.Figure()
@@ -349,8 +398,7 @@ with right:
     st.markdown(f"- **Dataset size (after clean):** {X.shape[0]}")
     st.markdown("\n")
 
-
-    
+    # ---- Shapes ----
     shape_counts = Counter(r["shape"] for r in rows)
     shape_summary = sorted(shape_counts.items(), key=lambda x: (-x[1], x[0]))
 
@@ -362,9 +410,18 @@ with right:
         for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
             st.markdown(f"- Cluster **{r['cluster_id']}** → {r['shape']}")
 
+    
+    if n_all >= 3:
+        st.markdown(
+            f"_Overall shape:_ **{overall['shape'].capitalize()}** "
+            # f"(solidity: {overall['solidity']:.2f}, aspect ratio: {overall['aspect_ratio']:.2f})"
+        )
+    else:
+        st.markdown("_Overall shape:_ *Not enough points to compute reliably.*")
+
     st.markdown("---")
 
-
+    # ---- Densities ----
     density_counts = Counter(r["density_label"] for r in rows)
     density_summary = sorted(density_counts.items(), key=lambda x: (-x[1], x[0]))
 
@@ -379,9 +436,17 @@ with right:
                 f"(Density: {r['density_val']:.2f})"
             )
 
+    if n_all >= 3:
+        st.markdown(
+            f"_Overall density:_ **{overall['density_label']}** "
+            # f"(n/area: {overall['density_val']:.2f})"
+        )
+    else:
+        st.markdown("_Overall density:_ *Not enough points to compute reliably.*")
+
     st.markdown("---")
 
-    
+    # ---- Distributions ----
     dist_counts = Counter(r["distribution"] for r in rows)
     dist_summary = sorted(dist_counts.items(), key=lambda x: (-x[1], x[0]))
 
@@ -391,6 +456,9 @@ with right:
 
     with st.expander("Show per-cluster distribution assignments"):
         for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
-            st.markdown(
-                f"- Cluster **{r['cluster_id']}** → {r['distribution']}"
-            )
+            st.markdown(f"- Cluster **{r['cluster_id']}** → {r['distribution']}")
+
+    if n_all >= 3:
+        st.markdown(f"_Overall distribution:_ **{overall['distribution']}**")
+    else:
+        st.markdown("_Overall distribution:_ *Not enough points to compute reliably.*")
