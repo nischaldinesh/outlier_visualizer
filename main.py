@@ -201,6 +201,12 @@ status.info(st.session_state.status_msg)
 
 if "selected_cluster" not in st.session_state:
     st.session_state.selected_cluster = None
+if "shape_filters" not in st.session_state:
+    st.session_state.shape_filters = []
+if "density_filters" not in st.session_state:
+    st.session_state.density_filters = []
+if "distribution_filters" not in st.session_state:
+    st.session_state.distribution_filters = []
 
 with st.sidebar:
     st.header("Upload & Settings")
@@ -238,6 +244,16 @@ signature = (getattr(file, "name", None), getattr(file, "size", None))
 if st.session_state.file_signature != signature:
     st.session_state.selected_cluster = None
     st.session_state.file_signature = signature
+    st.session_state.shape_filters = []
+    st.session_state.density_filters = []
+    st.session_state.distribution_filters = []
+    for key in list(st.session_state.keys()):
+        if isinstance(key, str) and (
+            key.startswith("shape-filter-")
+            or key.startswith("density-filter-")
+            or key.startswith("distribution-filter-")
+        ):
+            del st.session_state[key]
 
 if limit and limit > 0:
     raw = raw.head(limit)
@@ -378,7 +394,17 @@ with right:
 
     st.markdown("- **Cluster Shapes:**")
     for i, (shape, count) in enumerate(shape_summary, 1):
-        st.markdown(f"{i}. **{shape.capitalize()}** ({count})")
+        key = f"shape-filter-{shape}"
+        if key not in st.session_state:
+            st.session_state[key] = shape in st.session_state.shape_filters
+        cols = st.columns([0.8, 0.2])
+        with cols[0]:
+            st.markdown(f"{i}. **{shape.capitalize()}** ({count})")
+        with cols[1]:
+            st.checkbox("", key=key)
+    st.session_state.shape_filters = [
+        shape for shape, _ in shape_summary if st.session_state.get(f"shape-filter-{shape}", False)
+    ]
 
     with st.expander("Show per-cluster shape assignments"):
         highlighted = st.session_state.get("selected_cluster")
@@ -406,7 +432,17 @@ with right:
 
     st.markdown("- **Cluster Densities:**")
     for i, (dlabel, count) in enumerate(density_summary, 1):
-        st.markdown(f"{i}. **{dlabel}** ({count})")
+        key = f"density-filter-{dlabel}"
+        if key not in st.session_state:
+            st.session_state[key] = dlabel in st.session_state.density_filters
+        cols = st.columns([0.8, 0.2])
+        with cols[0]:
+            st.markdown(f"{i}. **{dlabel}** ({count})")
+        with cols[1]:
+            st.checkbox("", key=key)
+    st.session_state.density_filters = [
+        dlabel for dlabel, _ in density_summary if st.session_state.get(f"density-filter-{dlabel}", False)
+    ]
 
     with st.expander("Show per-cluster density assignments"):
         highlighted = st.session_state.get("selected_cluster")
@@ -437,7 +473,17 @@ with right:
 
     st.markdown("- **Cluster Distributions:**")
     for i, (dist, count) in enumerate(dist_summary, 1):
-        st.markdown(f"{i}. **{dist}** ({count})")
+        key = f"distribution-filter-{dist}"
+        if key not in st.session_state:
+            st.session_state[key] = dist in st.session_state.distribution_filters
+        cols = st.columns([0.8, 0.2])
+        with cols[0]:
+            st.markdown(f"{i}. **{dist}** ({count})")
+        with cols[1]:
+            st.checkbox("", key=key)
+    st.session_state.distribution_filters = [
+        dist for dist, _ in dist_summary if st.session_state.get(f"distribution-filter-{dist}", False)
+    ]
 
     with st.expander("Show per-cluster distribution assignments"):
         highlighted = st.session_state.get("selected_cluster")
@@ -472,6 +518,19 @@ with left:
     uniq = sorted(pd.unique(labels_as_str))
     color_map = {lab: PALETTE[i % len(PALETTE)] for i, lab in enumerate(uniq)}
     highlighted = st.session_state.get("selected_cluster")
+    shape_filters = set(st.session_state.get("shape_filters", []))
+    density_filters = set(st.session_state.get("density_filters", []))
+    distribution_filters = set(st.session_state.get("distribution_filters", []))
+    filters_active = bool(shape_filters or density_filters or distribution_filters)
+
+    def matches_active_filters(cluster_info) -> bool:
+        if shape_filters and cluster_info["shape"] not in shape_filters:
+            return False
+        if density_filters and cluster_info["density_label"] not in density_filters:
+            return False
+        if distribution_filters and cluster_info["distribution"] not in distribution_filters:
+            return False
+        return True
 
     fig = go.Figure()
     for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
@@ -480,7 +539,17 @@ with left:
         lab = str(r["cluster_id"])
         mask = labels_as_str == lab
         pts = X2d[mask]
-        if highlighted is None:
+        if highlighted is None and filters_active:
+            if matches_active_filters(r):
+                marker = dict(
+                    size=7,
+                    opacity=1.0,
+                    color=color_map[lab],
+                    line=dict(width=1.5, color="#FFFFFF"),
+                )
+            else:
+                marker = dict(size=4, opacity=0.2, color=color_map[lab])
+        elif highlighted is None:
             marker = dict(size=5, opacity=0.9, color=color_map[lab])
         elif highlighted == lab:
             marker = dict(
@@ -509,5 +578,14 @@ with left:
     st.plotly_chart(fig, use_container_width=True)
     if highlighted:
         st.caption(f"Highlighting cluster {highlighted}. Click again to clear.")
+    elif filters_active:
+        parts = []
+        if shape_filters:
+            parts.append("shape: " + ", ".join(sorted(s.capitalize() for s in shape_filters)))
+        if density_filters:
+            parts.append("density: " + ", ".join(sorted(d for d in density_filters)))
+        if distribution_filters:
+            parts.append("distribution: " + ", ".join(sorted(d for d in distribution_filters)))
+        st.caption(f"Highlighting clusters matching {'; '.join(parts)}.")
     else:
         st.caption("Use the cluster lists on the right to highlight a group.")
