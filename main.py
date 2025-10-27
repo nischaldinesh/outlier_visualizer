@@ -1,5 +1,5 @@
 from collections import Counter
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Tuple
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -199,6 +199,9 @@ if "status_msg" not in st.session_state:
     st.session_state.status_msg = "Upload a CSV to begin."
 status.info(st.session_state.status_msg)
 
+if "selected_cluster" not in st.session_state:
+    st.session_state.selected_cluster = None
+
 with st.sidebar:
     st.header("Upload & Settings")
     file = st.file_uploader("Please upload a CSV file", type=["csv"])
@@ -223,10 +226,19 @@ selected_dist = "All"
 if file is None:
     st.stop()
 
+if "file_signature" not in st.session_state:
+    st.session_state.file_signature = None
+
 st.session_state.status_msg = "Processing..."
 status.warning(st.session_state.status_msg)
 
 raw = pd.read_csv(file)
+
+signature = (getattr(file, "name", None), getattr(file, "size", None))
+if st.session_state.file_signature != signature:
+    st.session_state.selected_cluster = None
+    st.session_state.file_signature = signature
+
 if limit and limit > 0:
     raw = raw.head(limit)
 
@@ -278,6 +290,11 @@ clusters = build_groups(labels_relabeled)
 if not clusters:
     status.warning("No clusters found.")
     st.stop()
+
+selected_cluster = st.session_state.get("selected_cluster")
+if selected_cluster and selected_cluster not in clusters:
+    st.session_state.selected_cluster = None
+    selected_cluster = None
 
 # ---------------- Per-cluster analysis ----------------
 rows = []
@@ -349,50 +366,7 @@ status.success(st.session_state.status_msg)
 
 left, right = st.columns([2, 1.2])
 
-# ------------------ Plotting Section ------------------
-with left:
-    if not any(r["distribution"] == selected_dist for r in rows) and selected_dist != "All":
-        st.warning(f"No clusters found with '{selected_dist}' distribution.")
-        st.stop()
-
-    PALETTE = [
-        "#0072B2", "#E69F00", "#009E73", "#D55E00",
-        "#56B4E9", "#F0E442", "#CC79A7", "#000000",
-        "#4E79A7", "#F28E2B", "#E15759", "#76B7B2",
-        "#59A14F", "#EDC948", "#B07AA1", "#FF9DA7",
-        "#9C755F", "#BAB0AC",
-    ]
-
-    all_labels = list(pd.unique(pd.Series(labels_relabeled).astype(str)))
-    uniq = sorted(all_labels)
-    color_map = {lab: PALETTE[i % len(PALETTE)] for i, lab in enumerate(uniq)}
-
-    fig = go.Figure()
-    for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
-        if selected_dist != "All" and r["distribution"] != selected_dist:
-            continue
-        lab = str(r["cluster_id"])
-        mask = (pd.Series(labels_relabeled).astype(str).values == lab)
-        pts = X2d[mask]
-        fig.add_trace(go.Scattergl(
-            x=pts[:, 0], y=pts[:, 1],
-            mode="markers",
-            name=f"Cluster {lab}",
-            marker=dict(size=5, opacity=0.9, color=color_map[lab]),
-        ))
-    title = f"Clusters with '{selected_dist}' Distribution" if selected_dist != "All" else "All Clusters"
-    fig.update_layout(
-        title=title,
-        xaxis_title="t-SNE-1",
-        yaxis_title="t-SNE-2",
-        height=700,
-        legend_title="Cluster ID",
-        margin=dict(t=40, r=10, b=10, l=10),
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-
-# ------------------ Right Panel (Styled Output) ------------------
+# ------------------ Right Panel (Interactive Summaries) ------------------
 with right:
     st.subheader("Data Characteristics")
     st.markdown(f"- **Dataset size (after clean):** {X.shape[0]}")
@@ -407,10 +381,15 @@ with right:
         st.markdown(f"{i}. **{shape.capitalize()}** ({count})")
 
     with st.expander("Show per-cluster shape assignments"):
+        highlighted = st.session_state.get("selected_cluster")
         for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
-            st.markdown(f"- Cluster **{r['cluster_id']}** → {r['shape']}")
+            lab = str(r["cluster_id"])
+            label_text = f"Cluster {lab} -> {r['shape']}"
+            button_type = "primary" if highlighted == lab else "secondary"
+            if st.button(label_text, key=f"shape-{lab}", type=button_type):
+                st.session_state.selected_cluster = None if highlighted == lab else lab
+                highlighted = st.session_state.selected_cluster
 
-    
     if n_all >= 3:
         st.markdown(
             f"_Overall shape:_ **{overall['shape'].capitalize()}** "
@@ -430,11 +409,17 @@ with right:
         st.markdown(f"{i}. **{dlabel}** ({count})")
 
     with st.expander("Show per-cluster density assignments"):
+        highlighted = st.session_state.get("selected_cluster")
         for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
-            st.markdown(
-                f"- Cluster **{r['cluster_id']}** → {r['density_label']} "
-                f"(Density: {r['density_val']:.2f})"
+            lab = str(r["cluster_id"])
+            label_text = (
+                f"Cluster {lab} -> {r['density_label']} "
+                f"(density {r['density_val']:.2f})"
             )
+            button_type = "primary" if highlighted == lab else "secondary"
+            if st.button(label_text, key=f"density-{lab}", type=button_type):
+                st.session_state.selected_cluster = None if highlighted == lab else lab
+                highlighted = st.session_state.selected_cluster
 
     if n_all >= 3:
         st.markdown(
@@ -455,10 +440,74 @@ with right:
         st.markdown(f"{i}. **{dist}** ({count})")
 
     with st.expander("Show per-cluster distribution assignments"):
+        highlighted = st.session_state.get("selected_cluster")
         for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
-            st.markdown(f"- Cluster **{r['cluster_id']}** → {r['distribution']}")
+            lab = str(r["cluster_id"])
+            label_text = f"Cluster {lab} -> {r['distribution']}"
+            button_type = "primary" if highlighted == lab else "secondary"
+            if st.button(label_text, key=f"dist-{lab}", type=button_type):
+                st.session_state.selected_cluster = None if highlighted == lab else lab
+                highlighted = st.session_state.selected_cluster
 
     if n_all >= 3:
         st.markdown(f"_Overall distribution:_ **{overall['distribution']}**")
     else:
         st.markdown("_Overall distribution:_ *Not enough points to compute reliably.*")
+
+# ------------------ Plotting Section ------------------
+with left:
+    if not any(r["distribution"] == selected_dist for r in rows) and selected_dist != "All":
+        st.warning(f"No clusters found with '{selected_dist}' distribution.")
+        st.stop()
+
+    PALETTE = [
+        "#0072B2", "#E69F00", "#009E73", "#D55E00",
+        "#56B4E9", "#F0E442", "#CC79A7", "#000000",
+        "#4E79A7", "#F28E2B", "#E15759", "#76B7B2",
+        "#59A14F", "#EDC948", "#B07AA1", "#FF9DA7",
+        "#9C755F", "#BAB0AC",
+    ]
+
+    labels_as_str = pd.Series(labels_relabeled).astype(str).values
+    uniq = sorted(pd.unique(labels_as_str))
+    color_map = {lab: PALETTE[i % len(PALETTE)] for i, lab in enumerate(uniq)}
+    highlighted = st.session_state.get("selected_cluster")
+
+    fig = go.Figure()
+    for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
+        if selected_dist != "All" and r["distribution"] != selected_dist:
+            continue
+        lab = str(r["cluster_id"])
+        mask = labels_as_str == lab
+        pts = X2d[mask]
+        if highlighted is None:
+            marker = dict(size=5, opacity=0.9, color=color_map[lab])
+        elif highlighted == lab:
+            marker = dict(
+                size=7,
+                opacity=1.0,
+                color=color_map[lab],
+                line=dict(width=1.5, color="#FFFFFF"),
+            )
+        else:
+            marker = dict(size=4, opacity=0.2, color=color_map[lab])
+        fig.add_trace(go.Scattergl(
+            x=pts[:, 0], y=pts[:, 1],
+            mode="markers",
+            name=f"Cluster {lab}",
+            marker=marker,
+        ))
+    title = f"Clusters with '{selected_dist}' Distribution" if selected_dist != "All" else "All Clusters"
+    fig.update_layout(
+        title=title,
+        xaxis_title="t-SNE-1",
+        yaxis_title="t-SNE-2",
+        height=700,
+        legend_title="Cluster ID",
+        margin=dict(t=40, r=10, b=10, l=10),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    if highlighted:
+        st.caption(f"Highlighting cluster {highlighted}. Click again to clear.")
+    else:
+        st.caption("Use the cluster lists on the right to highlight a group.")
