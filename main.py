@@ -199,6 +199,26 @@ if "status_msg" not in st.session_state:
     st.session_state.status_msg = "Upload a CSV to begin."
 status.info(st.session_state.status_msg)
 
+INLINE_CHECKBOX_STYLE = """
+<style>
+.inline-checkbox .stCheckbox > label {
+    display: flex;
+    flex-direction: row-reverse;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0;
+}
+.inline-checkbox .stCheckbox > label div[data-testid="stMarkdownContainer"] {
+    display: inline-flex;
+    align-items: center;
+    margin: 0;
+}
+</style>
+"""
+if "inline_checkbox_css" not in st.session_state:
+    st.markdown(INLINE_CHECKBOX_STYLE, unsafe_allow_html=True)
+    st.session_state.inline_checkbox_css = True
+
 if "selected_cluster" not in st.session_state:
     st.session_state.selected_cluster = None
 if "shape_filters" not in st.session_state:
@@ -397,11 +417,9 @@ with right:
         key = f"shape-filter-{shape}"
         if key not in st.session_state:
             st.session_state[key] = shape in st.session_state.shape_filters
-        cols = st.columns([0.8, 0.2])
-        with cols[0]:
-            st.markdown(f"{i}. **{shape.capitalize()}** ({count})")
-        with cols[1]:
-            st.checkbox("", key=key)
+        st.markdown('<div class="inline-checkbox">', unsafe_allow_html=True)
+        st.checkbox(f"{i}. **{shape.capitalize()}** ({count})", key=key)
+        st.markdown("</div>", unsafe_allow_html=True)
     st.session_state.shape_filters = [
         shape for shape, _ in shape_summary if st.session_state.get(f"shape-filter-{shape}", False)
     ]
@@ -435,11 +453,9 @@ with right:
         key = f"density-filter-{dlabel}"
         if key not in st.session_state:
             st.session_state[key] = dlabel in st.session_state.density_filters
-        cols = st.columns([0.8, 0.2])
-        with cols[0]:
-            st.markdown(f"{i}. **{dlabel}** ({count})")
-        with cols[1]:
-            st.checkbox("", key=key)
+        st.markdown('<div class="inline-checkbox">', unsafe_allow_html=True)
+        st.checkbox(f"{i}. **{dlabel}** ({count})", key=key)
+        st.markdown("</div>", unsafe_allow_html=True)
     st.session_state.density_filters = [
         dlabel for dlabel, _ in density_summary if st.session_state.get(f"density-filter-{dlabel}", False)
     ]
@@ -476,11 +492,9 @@ with right:
         key = f"distribution-filter-{dist}"
         if key not in st.session_state:
             st.session_state[key] = dist in st.session_state.distribution_filters
-        cols = st.columns([0.8, 0.2])
-        with cols[0]:
-            st.markdown(f"{i}. **{dist}** ({count})")
-        with cols[1]:
-            st.checkbox("", key=key)
+        st.markdown('<div class="inline-checkbox">', unsafe_allow_html=True)
+        st.checkbox(f"{i}. **{dist}** ({count})", key=key)
+        st.markdown("</div>", unsafe_allow_html=True)
     st.session_state.distribution_filters = [
         dist for dist, _ in dist_summary if st.session_state.get(f"distribution-filter-{dist}", False)
     ]
