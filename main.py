@@ -804,3 +804,4 @@ if st.session_state.get("show_explore") and detectors is not None and st.session
             target_col = rows_cols[0][i] if i < 2 else rows_cols[1][i - 2]
             with target_col:
                 render_heatmap_image(scores, f"{algo} — {st.session_state['_explore_opts']['heat_tech']}")
+
