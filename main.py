@@ -7,10 +7,9 @@ import plotly.graph_objs as go
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import DBSCAN
-from sklearn.neighbors import NearestNeighbors
+from sklearn.neighbors import NearestNeighbors, KernelDensity
 from sklearn.manifold import TSNE
 from scipy.spatial import ConvexHull
-
 
 import matplotlib.pyplot as plt
 from scipy.interpolate import RBFInterpolator
@@ -19,19 +18,19 @@ from scipy.ndimage import gaussian_filter
 try:
     import alphashape
     from shapely.ops import unary_union
-    from shapely.geometry import MultiPolygon, Polygon
+    from shapely.geometry import MultiPolygon, Polygon, Point
 except Exception:
     alphashape = None
     unary_union = None
     MultiPolygon = None
     Polygon = None
+    Point = None
 
 import importlib
 try:
     detectors = importlib.import_module("detectors")
 except Exception:
     detectors = None
-
 
 # -------------------- Helper Functions --------------------
 
@@ -47,13 +46,11 @@ def auto_eps(X2d: np.ndarray, k: int = 10, q: float = 95.0) -> float:
         eps = float(np.median(kth[kth > 0])) if np.any(kth > 0) else 0.5
     return eps
 
-
 def clamp_perplexity(perp: float, n: int) -> float:
     if n <= 3:
         return 1.0
     upper = max(2.0, (n - 1) / 3.0)
     return float(np.clip(perp, 2.0, upper))
-
 
 def tsne_embed(X_std: np.ndarray, random_state: int, perplexity: float, metric: str) -> np.ndarray:
     import inspect
@@ -80,11 +77,9 @@ def tsne_embed(X_std: np.ndarray, random_state: int, perplexity: float, metric: 
     tsne = TSNE(**kwargs)
     return tsne.fit_transform(X_std)
 
-
 def convex_hull_poly(points: np.ndarray) -> np.ndarray:
     hull = ConvexHull(points)
     return points[hull.vertices]
-
 
 def alpha_shape_polygon(points: np.ndarray, alpha: Optional[float] = None):
     if alphashape is None:
@@ -106,7 +101,6 @@ def alpha_shape_polygon(points: np.ndarray, alpha: Optional[float] = None):
         hull_pts = convex_hull_poly(points)
         return geom.Polygon(hull_pts)
 
-
 def polygon_area_perimeter(poly) -> Tuple[float, float, int]:
     if MultiPolygon and isinstance(poly, MultiPolygon):
         poly = unary_union(poly)
@@ -118,7 +112,6 @@ def polygon_area_perimeter(poly) -> Tuple[float, float, int]:
     elif getattr(poly, "geom_type", "") == "MultiPolygon":
         holes = sum(len(g.interiors) for g in poly.geoms)
     return area, perim, holes
-
 
 def shape_metrics_2d(points: np.ndarray, alpha: Optional[float] = None) -> Dict[str, float]:
     try:
@@ -141,7 +134,6 @@ def shape_metrics_2d(points: np.ndarray, alpha: Optional[float] = None) -> Dict[
     return {"solidity": solidity, "compactness": compactness,
             "area_alpha": area_a, "area_hull": area_h}
 
-
 def aspect_ratio_from_cov(points: np.ndarray) -> float:
     if points.shape[0] < 2:
         return 1.0
@@ -149,7 +141,6 @@ def aspect_ratio_from_cov(points: np.ndarray) -> float:
     cov = np.cov(centered, rowvar=False)
     vals = np.clip(np.linalg.eigvals(cov).real, 1e-12, None)
     return float(np.sqrt(vals.max() / vals.min()))
-
 
 def pca_var_ratio(points: np.ndarray) -> float:
     if points.shape[0] < 2:
@@ -159,7 +150,6 @@ def pca_var_ratio(points: np.ndarray) -> float:
     vals = np.clip(np.linalg.eigvals(cov).real, 1e-12, None)
     vals_sorted = np.sort(vals)[::-1]
     return float(vals_sorted[0] / (vals_sorted.sum() + 1e-12))
-
 
 def poly_r2(x: np.ndarray, y: np.ndarray, deg: int) -> float:
     x = np.asarray(x).ravel(); y = np.asarray(y).ravel()
@@ -181,7 +171,6 @@ def poly_r2(x: np.ndarray, y: np.ndarray, deg: int) -> float:
         except Exception:
             return 0.0
 
-
 def classify_shape(solidity: float, aspect_ratio: float) -> str:
     if solidity < 0.85:
         return "concave/irregular"
@@ -190,20 +179,6 @@ def classify_shape(solidity: float, aspect_ratio: float) -> str:
     if aspect_ratio <= 3.0:
         return "elliptical"
     return "elongated"
-
-
-def classify_density(d: float) -> str:
-    if d > 15:
-        return "Extremely Dense"
-    elif d > 8:
-        return "Dense"
-    elif d > 3:
-        return "Moderate"
-    elif d > 1:
-        return "Sparse"
-    else:
-        return "Very Sparse"
-
 
 # ---------------- NEW: Distribution typing ----------------
 DIST_RANDOM = "Random"
@@ -230,7 +205,6 @@ def classify_distribution_local(points: np.ndarray) -> str:
         return DIST_MANIFOLD
     return DIST_RANDOM
 
-
 def make_cluster_polygon(points: np.ndarray, alpha: Optional[float]) -> Optional[Polygon]:
     if Polygon is None:
         return None
@@ -245,7 +219,6 @@ def make_cluster_polygon(points: np.ndarray, alpha: Optional[float]) -> Optional
         return Polygon(points[order])
     except Exception:
         return None
-
 
 def detect_overlaps(cluster_points: Dict[str, np.ndarray], alpha: Optional[float]) -> set:
     ids = sorted(cluster_points.keys(), key=lambda z: int(z))
@@ -288,13 +261,11 @@ def detect_overlaps(cluster_points: Dict[str, np.ndarray], alpha: Optional[float
 
     return overlapped
 
-
 def build_groups(labels_array):
     groups = {}
     for i, cid in enumerate(labels_array):
         groups.setdefault(str(int(cid)), []).append(i)
     return groups
-
 
 def hex_to_rgba(hex_color: str, alpha: float) -> str:
     hex_color = hex_color.lstrip("#")
@@ -304,6 +275,18 @@ def hex_to_rgba(hex_color: str, alpha: float) -> str:
     a = float(np.clip(alpha, 0.0, 1.0))
     return f"rgba({r},{g},{b},{a})"
 
+
+def lighten_hex(hex_color: str, amount: float = 0.35) -> str:
+    """Blend color toward white to create a highlight variant."""
+    hex_color = hex_color.lstrip("#")
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    amount = float(np.clip(amount, 0.0, 1.0))
+    r = int(r + (255 - r) * amount)
+    g = int(g + (255 - g) * amount)
+    b = int(b + (255 - b) * amount)
+    return f"#{r:02X}{g:02X}{b:02X}"
 
 def polygon_fill_traces_for_points(
     pts: np.ndarray,
@@ -365,11 +348,135 @@ def polygon_fill_traces_for_points(
     return traces
 
 
+def add_kde_contours_for_cluster(
+    fig: go.Figure,
+    pts: np.ndarray,
+    base_hex: str,
+    poly: Optional[Polygon] = None,
+    levels: Tuple[float, ...] = (0.6, 0.8, 0.95),
+) -> None:
+    """
+    Overlay semi-transparent KDE contour rings that approximate Highest Density Regions.
+    """
+    if fig is None or pts is None:
+        return
+    pts = np.asarray(pts, dtype=float)
+    if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] < 5:
+        return
+
+    pts = np.nan_to_num(pts, nan=0.0)
+    n, d = pts.shape
+    xmin, xmax = float(np.min(pts[:, 0])), float(np.max(pts[:, 0]))
+    ymin, ymax = float(np.min(pts[:, 1])), float(np.max(pts[:, 1]))
+    pad_x = max((xmax - xmin) * 0.1, 1e-2)
+    pad_y = max((ymax - ymin) * 0.1, 1e-2)
+    gx = np.linspace(xmin - pad_x, xmax + pad_x, 80)
+    gy = np.linspace(ymin - pad_y, ymax + pad_y, 80)
+    xx, yy = np.meshgrid(gx, gy)
+    grid_points = np.c_[xx.ravel(), yy.ravel()]
+
+    std = np.std(pts, axis=0, ddof=1)
+    scale = float(np.mean(np.where(std > 1e-6, std, 1.0)))
+    scott = n ** (-1.0 / (d + 4))
+    bandwidth = max(scale * scott, 1e-3)
+    try:
+        kde = KernelDensity(bandwidth=bandwidth, kernel="gaussian")
+        kde.fit(pts)
+    except Exception:
+        return
+
+    log_density = kde.score_samples(grid_points)
+    density = np.exp(log_density).reshape(xx.shape)
+
+    if poly is not None and Point is not None:
+        try:
+            inside = np.array(
+                [poly.contains(Point(p)) or poly.touches(Point(p)) for p in grid_points],
+                dtype=bool,
+            )
+            density = np.where(inside.reshape(xx.shape), density, np.nan)
+        except Exception:
+            pass
+
+    finite_mask = np.isfinite(density)
+    flat = density[finite_mask]
+    if flat.size == 0:
+        return
+
+    sorted_vals = np.sort(flat)[::-1]
+    weights = sorted_vals / (np.sum(sorted_vals) + 1e-12)
+    cdf = np.cumsum(weights)
+
+    thresholds: List[float] = []
+    for lvl in levels:
+        lvl = float(np.clip(lvl, 0.0, 0.999999))
+        idx = int(np.searchsorted(cdf, lvl, side="left"))
+        idx = min(idx, len(sorted_vals) - 1)
+        thresholds.append(sorted_vals[idx])
+
+    bands = np.zeros_like(density, dtype=float)
+    filled = np.zeros_like(density, dtype=bool)
+    for idx, thr in enumerate(thresholds, start=1):
+        mask = (density >= thr) & finite_mask & (~filled)
+        if np.any(mask):
+            bands = np.where(mask, float(idx), bands)
+            filled = filled | mask
+
+    bands = np.where(bands > 0, bands, np.nan)
+    if np.all(np.isnan(bands)):
+        return
+
+    contour_color = hex_to_rgba(base_hex, 0.25)
+    fig.add_trace(
+        go.Contour(
+            x=gx,
+            y=gy,
+            z=bands,
+            name="_kde",
+            showscale=False,
+            hoverinfo="skip",
+            opacity=0.25,
+            contours=dict(start=1, end=len(levels), size=1, coloring="fill", showlines=False),
+            colorscale=[[0.0, contour_color], [1.0, contour_color]],
+            line=dict(width=0),
+        )
+    )
+
+
+def local_k_density(points: np.ndarray, k: int = 10) -> float:
+    """
+    Estimate intra-cluster density via inverse k-th neighbor distance.
+    """
+    n = points.shape[0]
+    if n <= 1:
+        return 0.0
+    k = min(k, n - 1)
+    if k < 1:
+        return 0.0
+    nbrs = NearestNeighbors(n_neighbors=k + 1).fit(points)
+    dists, _ = nbrs.kneighbors(points)
+    kth = dists[:, -1]
+    local = 1.0 / (kth + 1e-9)
+    return float(np.mean(local))
+
+
+def adaptive_density_k(n_samples: int, n_features: int) -> int:
+    """
+    Choose k adaptively based on dataset size and dimensionality.
+    """
+    if n_samples < 2000:
+        k = int(5 + n_features / 4.0)
+    elif n_samples < 10000:
+        k = int(10 + n_features / 3.0)
+    else:
+        k = int(20 + n_features / 2.0)
+    return int(np.clip(k, 3, 30))
+
+
 # -------------------- Streamlit UI --------------------
 
 st.set_page_config(page_title="Comparative Analytical Framework", layout="wide")
 st.title("Comparative Analytical Framework for Outlier Detection Algorithms")
-
 
 if "shape_filters" not in st.session_state:
     st.session_state.shape_filters = []
@@ -474,6 +581,8 @@ if not clusters:
     st.warning("No clusters found.")
     st.stop()
 
+k_density = adaptive_density_k(X.shape[0], X.shape[1])
+
 # ---------------- Per-cluster analysis ----------------
 rows = []
 cluster_points = {}
@@ -490,17 +599,99 @@ for cid, idxs in clusters.items():
         ar = aspect_ratio_from_cov(pts)
         metrics = shape_metrics_2d(pts, alpha=alpha)
         shape = classify_shape(metrics["solidity"], ar)
-        area = metrics["area_alpha"]
-        density_val = npts / area if area > 0 else 0.0
+        density_val = local_k_density(pts, k=k_density)
         dist_type = classify_distribution_local(pts)
 
     rows.append({
         "cluster_id": int(cid),
         "shape": shape,
         "density_val": density_val,
-        "density_label": classify_density(density_val),
         "distribution": dist_type
     })
+
+# --- Adaptive density classification using coefficient of variation ---
+density_classifier: Dict[str, object] = {"mode": "none", "edges": None, "labels": []}
+if rows:
+    density_values = np.nan_to_num(
+        np.array([r["density_val"] for r in rows], dtype=float),
+        nan=0.0,
+    )
+    unique_vals = np.unique(density_values)
+    if unique_vals.size == 1:
+        assigned = ["Moderate"] * len(density_values)
+        density_classifier = {"mode": "flat", "edges": None, "labels": ["Moderate"]}
+    else:
+        mean_density = float(np.mean(density_values))
+        std_density = float(np.std(density_values))
+        variation = 0.0 if abs(mean_density) < 1e-9 else std_density / abs(mean_density)
+
+        target_bins = 3 if (variation >= 0.2 and unique_vals.size >= 3) else 2
+        labels_catalog = {2: ["Sparse", "Dense"], 3: ["Sparse", "Moderate", "Dense"]}
+
+        try:
+            qcut_res, bin_edges = pd.qcut(
+                density_values,
+                q=target_bins,
+                retbins=True,
+                duplicates="drop",
+            )
+        except ValueError:
+            qcut_res, bin_edges = None, None
+
+        actual_bins = (len(bin_edges) - 1) if bin_edges is not None else 0
+        if actual_bins <= 0:
+            qcut_res = None
+
+        if qcut_res is None:
+            # Fallback to binary split around the median.
+            median_thr = float(np.median(density_values))
+            assigned = ["Sparse" if v <= median_thr else "Dense" for v in density_values]
+            density_classifier = {
+                "mode": "binary",
+                "edges": [density_values.min(), median_thr, density_values.max()],
+                "labels": ["Sparse", "Dense"],
+            }
+        else:
+            actual_bins = min(actual_bins, target_bins)
+            if actual_bins <= 1:
+                assigned = ["Moderate"] * len(density_values)
+                density_classifier = {"mode": "flat", "edges": None, "labels": ["Moderate"]}
+            else:
+                labels_use = labels_catalog[actual_bins]
+                codes = pd.Series(qcut_res).cat.codes.to_numpy()
+                assigned = [
+                    labels_use[c] if 0 <= c < len(labels_use) else labels_use[-1]
+                    for c in codes
+                ]
+                density_classifier = {
+                    "mode": f"{actual_bins}-quantile",
+                    "edges": bin_edges[: actual_bins + 1],
+                    "labels": labels_use,
+                }
+
+    for r, lbl in zip(rows, assigned):
+        r["density_label"] = lbl
+else:
+    density_values = np.array([], dtype=float)
+
+
+def overall_density_label(val: float) -> str:
+    mode = density_classifier.get("mode", "none")
+    if mode == "none":
+        return "N/A"
+    if mode == "flat":
+        return "Moderate"
+    edges = density_classifier.get("edges")
+    labels = density_classifier.get("labels", [])
+    if edges is None or len(labels) == 0:
+        return "N/A"
+    edges_arr = np.asarray(edges, dtype=float)
+    if edges_arr.size < 2:
+        return labels[-1] if labels else "N/A"
+    for upper, label in zip(edges_arr[1:], labels):
+        if val <= upper:
+            return label
+    return labels[-1]
 
 # ---------------- Overall dataset analysis (full X2d) ----------------
 overall = {
@@ -517,8 +708,7 @@ if n_all >= 3:
     ar_all = aspect_ratio_from_cov(all_pts)
     metrics_all = shape_metrics_2d(all_pts, alpha=alpha)
     shape_all = classify_shape(metrics_all["solidity"], ar_all)
-    area_all = metrics_all["area_alpha"]
-    density_all = n_all / area_all if area_all > 0 else 0.0
+    density_all = local_k_density(all_pts, k=k_density)
 
     global_dist = classify_distribution_local(all_pts)
 
@@ -527,7 +717,7 @@ if n_all >= 3:
         "solidity": float(metrics_all["solidity"]),
         "aspect_ratio": float(ar_all),
         "density_val": float(density_all),
-        "density_label": classify_density(density_all),
+        "density_label": overall_density_label(float(density_all)),
         "distribution": global_dist,
     })
 
@@ -691,13 +881,51 @@ with left:
                 ):
                     t.update(legendgroup=f"cluster-{lab}", showlegend=False, hoverinfo="skip")
                     fig.add_trace(t)
+            else:
+                highlight_hex = lighten_hex(color_map[lab], 0.5)
+                fig.add_trace(
+                    go.Scattergl(
+                        x=pts[:, 0],
+                        y=pts[:, 1],
+                        mode="markers",
+                        name="",
+                        hoverinfo="skip",
+                        showlegend=False,
+                        legendgroup=f"cluster-{lab}",
+                        marker=dict(
+                            size=18,
+                            symbol="circle",
+                            color=hex_to_rgba(highlight_hex, min(shade_alpha + 0.35, 0.95)),
+                            line=dict(width=2, color="#FFFFFF"),
+                        ),
+                    )
+                )
+            if density_filters:
+                info = info_by_lab.get(lab)
+                if info and info["density_label"] in density_filters:
+                    poly = make_cluster_polygon(pts, alpha)
+                    # KDE contour rings visualize intra-cluster density distribution for selected density classes only.
+                    # Each contour ring (60%, 80%, 95%) represents a Highest Density Region.
+                    add_kde_contours_for_cluster(
+                        fig,
+                        pts,
+                        base_hex=color_map[lab],
+                        poly=poly,
+                        levels=(0.6, 0.8, 0.95),
+                    )
 
     for lab in sorted(uniq, key=lambda x: int(x) if x.isdigit() else x):
         pts = X2d[labels_as_str == lab]
-        marker = dict(size=7 if matches_filters(lab) else 5,
-                      opacity=1.0 if matches_filters(lab) else 0.9,
-                      color=color_map[lab],
-                      line=dict(width=1, color="#FFFFFF") if matches_filters(lab) else None)
+        highlighted = matches_filters(lab)
+        base_hex = color_map[lab]
+        marker_color = lighten_hex(base_hex, 0.45) if highlighted else base_hex
+        marker = dict(
+            size=8 if highlighted else 5,
+            opacity=1.0 if highlighted else 0.85,
+            color=marker_color,
+            line=dict(width=2, color="#0F172A") if highlighted else None,
+            symbol="circle",
+        )
         fig.add_trace(
             go.Scattergl(
                 x=pts[:, 0], y=pts[:, 1],
@@ -804,4 +1032,3 @@ if st.session_state.get("show_explore") and detectors is not None and st.session
             target_col = rows_cols[0][i] if i < 2 else rows_cols[1][i - 2]
             with target_col:
                 render_heatmap_image(scores, f"{algo} — {st.session_state['_explore_opts']['heat_tech']}")
-
