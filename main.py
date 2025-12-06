@@ -7,7 +7,7 @@ import plotly.graph_objs as go
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import DBSCAN
-from sklearn.neighbors import NearestNeighbors, KernelDensity
+from sklearn.neighbors import NearestNeighbors
 from sklearn.manifold import TSNE
 from scipy.spatial import ConvexHull
 
@@ -34,7 +34,7 @@ except Exception:
 
 # -------------------- Helper Functions --------------------
 
-def auto_eps(X2d: np.ndarray, k: int = 10, q: float = 95.0) -> float:
+def auto_eps(X2d: np.ndarray, k: int = 10, q: float = 85.0) -> float:
     k = min(k, len(X2d) - 1) if len(X2d) > 1 else 1
     if k < 1:
         return 0.5
@@ -288,6 +288,47 @@ def lighten_hex(hex_color: str, amount: float = 0.35) -> str:
     b = int(b + (255 - b) * amount)
     return f"#{r:02X}{g:02X}{b:02X}"
 
+
+def add_simple_density_rings(
+    fig: go.Figure,
+    pts: np.ndarray,
+    base_hex: str,
+    alpha_scale: float = 1.0,
+) -> None:
+    """
+    Draw layered translucent rings by expanding the convex hull.
+    Mimics halo contours without altering density math.
+    """
+    if fig is None or pts is None or pts.shape[0] < 3:
+        return
+
+    hull = ConvexHull(pts)
+    hull_pts = pts[hull.vertices]
+    cx = float(np.mean(hull_pts[:, 0])); cy = float(np.mean(hull_pts[:, 1]))
+
+    scale_factors = [1.05, 1.15, 1.25]
+    base_alphas = [0.32, 0.20, 0.12]
+    color_steps = [lighten_hex(base_hex, amt) for amt in (0.15, 0.35, 0.55)]
+    alphas = [float(np.clip(a * alpha_scale, 0.02, 0.8)) for a in base_alphas]
+
+    for scale, alpha, ring_hex in zip(scale_factors, alphas, color_steps):
+        xs = (hull_pts[:, 0] - cx) * scale + cx
+        ys = (hull_pts[:, 1] - cy) * scale + cy
+        xs = xs.tolist() + [xs[0]]
+        ys = ys.tolist() + [ys[0]]
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="lines",
+                fill="toself",
+                fillcolor=hex_to_rgba(ring_hex, alpha),
+                line=dict(width=1, color=hex_to_rgba(ring_hex, alpha * 0.8)),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
 def polygon_fill_traces_for_points(
     pts: np.ndarray,
     base_hex: str,
@@ -297,150 +338,27 @@ def polygon_fill_traces_for_points(
     traces: List[go.Scatter] = []
     if pts.shape[0] < 3:
         return traces
+    # Always use ConvexHull for shading to keep it tight and minimal.
+    hull = ConvexHull(pts)
+    order = hull.vertices
+    x = pts[order, 0].tolist() + [pts[order[0], 0]]
+    y = pts[order, 1].tolist() + [pts[order[0], 1]]
 
-    poly = None
-    if alphashape is not None and Polygon is not None:
-        try:
-            poly = alpha_shape_polygon(pts, alpha=alpha_param)
-        except Exception:
-            poly = None
+    # Keep shading very light.
+    alpha_use = float(np.clip(fill_alpha, 0.0, 0.12))
 
-    if poly is None or (hasattr(poly, "is_empty") and poly.is_empty):
-        hull = ConvexHull(pts)
-        order = hull.vertices
-        x = pts[order, 0].tolist() + [pts[order[0], 0]]
-        y = pts[order, 1].tolist() + [pts[order[0], 1]]
-        traces.append(
-            go.Scatter(
-                x=x, y=y, mode="lines",
-                fill="toself",
-                fillcolor=hex_to_rgba(base_hex, fill_alpha),
-                line=dict(width=0),
-                hoverinfo="skip",
-                showlegend=False,
-                name="_region",
-            )
-        )
-        return traces
-
-    polys: Iterable[Polygon]
-    if MultiPolygon and isinstance(poly, MultiPolygon):
-        if unary_union is not None:
-            poly = unary_union(poly)
-        polys = getattr(poly, "geoms", [])
-    else:
-        polys = [poly]
-
-    for p in polys:
-        ext = p.exterior.coords.xy
-        x = list(ext[0]); y = list(ext[1])
-        traces.append(
-            go.Scatter(
-                x=x, y=y, mode="lines",
-                fill="toself",
-                fillcolor=hex_to_rgba(base_hex, fill_alpha),
-                line=dict(width=0),
-                hoverinfo="skip",
-                showlegend=False,
-                name="_region",
-            )
-        )
-    return traces
-
-
-def add_kde_contours_for_cluster(
-    fig: go.Figure,
-    pts: np.ndarray,
-    base_hex: str,
-    poly: Optional[Polygon] = None,
-    levels: Tuple[float, ...] = (0.6, 0.8, 0.95),
-) -> None:
-    """
-    Overlay semi-transparent KDE contour rings that approximate Highest Density Regions.
-    """
-    if fig is None or pts is None:
-        return
-    pts = np.asarray(pts, dtype=float)
-    if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] < 5:
-        return
-
-    pts = np.nan_to_num(pts, nan=0.0)
-    n, d = pts.shape
-    xmin, xmax = float(np.min(pts[:, 0])), float(np.max(pts[:, 0]))
-    ymin, ymax = float(np.min(pts[:, 1])), float(np.max(pts[:, 1]))
-    pad_x = max((xmax - xmin) * 0.1, 1e-2)
-    pad_y = max((ymax - ymin) * 0.1, 1e-2)
-    gx = np.linspace(xmin - pad_x, xmax + pad_x, 80)
-    gy = np.linspace(ymin - pad_y, ymax + pad_y, 80)
-    xx, yy = np.meshgrid(gx, gy)
-    grid_points = np.c_[xx.ravel(), yy.ravel()]
-
-    std = np.std(pts, axis=0, ddof=1)
-    scale = float(np.mean(np.where(std > 1e-6, std, 1.0)))
-    scott = n ** (-1.0 / (d + 4))
-    bandwidth = max(scale * scott, 1e-3)
-    try:
-        kde = KernelDensity(bandwidth=bandwidth, kernel="gaussian")
-        kde.fit(pts)
-    except Exception:
-        return
-
-    log_density = kde.score_samples(grid_points)
-    density = np.exp(log_density).reshape(xx.shape)
-
-    if poly is not None and Point is not None:
-        try:
-            inside = np.array(
-                [poly.contains(Point(p)) or poly.touches(Point(p)) for p in grid_points],
-                dtype=bool,
-            )
-            density = np.where(inside.reshape(xx.shape), density, np.nan)
-        except Exception:
-            pass
-
-    finite_mask = np.isfinite(density)
-    flat = density[finite_mask]
-    if flat.size == 0:
-        return
-
-    sorted_vals = np.sort(flat)[::-1]
-    weights = sorted_vals / (np.sum(sorted_vals) + 1e-12)
-    cdf = np.cumsum(weights)
-
-    thresholds: List[float] = []
-    for lvl in levels:
-        lvl = float(np.clip(lvl, 0.0, 0.999999))
-        idx = int(np.searchsorted(cdf, lvl, side="left"))
-        idx = min(idx, len(sorted_vals) - 1)
-        thresholds.append(sorted_vals[idx])
-
-    bands = np.zeros_like(density, dtype=float)
-    filled = np.zeros_like(density, dtype=bool)
-    for idx, thr in enumerate(thresholds, start=1):
-        mask = (density >= thr) & finite_mask & (~filled)
-        if np.any(mask):
-            bands = np.where(mask, float(idx), bands)
-            filled = filled | mask
-
-    bands = np.where(bands > 0, bands, np.nan)
-    if np.all(np.isnan(bands)):
-        return
-
-    contour_color = hex_to_rgba(base_hex, 0.25)
-    fig.add_trace(
-        go.Contour(
-            x=gx,
-            y=gy,
-            z=bands,
-            name="_kde",
-            showscale=False,
-            hoverinfo="skip",
-            opacity=0.25,
-            contours=dict(start=1, end=len(levels), size=1, coloring="fill", showlines=False),
-            colorscale=[[0.0, contour_color], [1.0, contour_color]],
+    traces.append(
+        go.Scatter(
+            x=x, y=y, mode="lines",
+            fill="toself",
+            fillcolor=hex_to_rgba(base_hex, alpha_use),
             line=dict(width=0),
+            hoverinfo="skip",
+            showlegend=False,
+            name="_region",
         )
     )
+    return traces
 
 
 def local_k_density(points: np.ndarray, k: int = 10) -> float:
@@ -477,6 +395,26 @@ def adaptive_density_k(n_samples: int, n_features: int) -> int:
 
 st.set_page_config(page_title="Comparative Analytical Framework", layout="wide")
 st.title("Comparative Analytical Framework for Outlier Detection Algorithms")
+st.markdown(
+    """
+    <style>
+    div[data-testid="stButton"] button {
+        width: 100%;
+        border: none;
+        background: transparent;
+        color: inherit;
+        padding: 0.1rem 0.2rem;
+        display: flex;
+        justify-content: flex-start;
+        text-align: left;
+    }
+    div[data-testid="stButton"] button:hover {
+        background-color: rgba(253, 224, 71, 0.12);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 if "shape_filters" not in st.session_state:
     st.session_state.shape_filters = []
@@ -486,6 +424,8 @@ if "distribution_filters" not in st.session_state:
     st.session_state.distribution_filters = []
 if "show_explore" not in st.session_state:
     st.session_state.show_explore = False
+if "selected_cluster" not in st.session_state:
+    st.session_state.selected_cluster = None
 
 with st.sidebar:
     st.header("Upload & Settings")
@@ -569,14 +509,17 @@ scaler = StandardScaler()
 X_std = scaler.fit_transform(X.values)
 X2d = tsne_embed(X_std=X_std, random_state=int(seed), perplexity=float(tsne_perp), metric=tsne_metric)
 
-# -------- RELABEL to 1-based positive IDs --------
-uniq_order = sorted(pd.unique(labels_used))
-if -1 in uniq_order:
-    uniq_order = [l for l in uniq_order if l != -1] + [-1]
-id_map = {old: i for i, old in enumerate(uniq_order, start=1)}
-labels_relabeled = np.array([id_map[int(l)] for l in labels_used], dtype=int)
+# -------- RELABEL to 1-based positive IDs (preserve noise = -1, keep original order) --------
+uniq_clusters = sorted([l for l in pd.unique(labels_used) if l != -1])
+id_map = {old: i for i, old in enumerate(uniq_clusters, start=1)}
+labels_relabeled = np.array([
+    id_map[l] if l != -1 else -1
+    for l in labels_used
+], dtype=int)
 
 clusters = build_groups(labels_relabeled)
+noise_key = "-1"
+noise_idxs = clusters.pop(noise_key, [])  # drop noise points from cluster analysis
 if not clusters:
     st.warning("No clusters found.")
     st.stop()
@@ -722,6 +665,12 @@ if n_all >= 3:
     })
 
 # ---------------- Detect overlaps & override overall if needed ----------------
+# prepare filter selections for both columns
+shape_filters = set(st.session_state.get("shape_filters", []))
+density_filters = set(st.session_state.get("density_filters", []))
+distribution_filters = set(st.session_state.get("distribution_filters", []))
+filters_active = bool(shape_filters or density_filters or distribution_filters)
+
 overlap_ids = detect_overlaps(cluster_points, alpha=alpha)
 if overlap_ids:
     for r in rows:
@@ -753,17 +702,19 @@ with right:
             key = f"shape-filter-{shape}"
             if key not in st.session_state:
                 st.session_state[key] = shape in st.session_state.shape_filters
-            cols = st.columns([0.8, 0.2])
-            with cols[0]:
-                st.markdown(f"{i}. **{shape.capitalize()}** ({count})")
-            with cols[1]:
-                st.checkbox("select", key=key, label_visibility="collapsed")
+            st.checkbox(f"{i}. {shape.capitalize()} ({count})", key=key)
         st.session_state.shape_filters = [
             shape for shape, _ in shape_summary if st.session_state.get(f"shape-filter-{shape}", False)
         ]
+        shape_filters = set(st.session_state.shape_filters)
         with st.expander("per-cluster details", expanded=False):
             for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
-                st.markdown(f"- Cluster **{r['cluster_id']}** : {r['shape']}")
+                cid = str(int(r["cluster_id"]))
+                if shape_filters and r["shape"] not in shape_filters:
+                    continue
+                label = f"• Cluster {cid} : {r['shape']}"
+                if st.button(label, key=f"shape-cluster-{cid}", use_container_width=True):
+                    st.session_state.selected_cluster = cid
         if n_all >= 3:
             st.markdown(f"_Overall shape:_ **{overall['shape'].capitalize()}** ")
 
@@ -774,21 +725,23 @@ with right:
             key = f"density-filter-{dlabel}"
             if key not in st.session_state:
                 st.session_state[key] = dlabel in st.session_state.density_filters
-            cols = st.columns([0.8, 0.2])
-            with cols[0]:
-                st.markdown(f"{i}. **{dlabel}** ({count})")
-            with cols[1]:
-                st.checkbox("select", key=key, label_visibility="collapsed")
+            st.checkbox(f"{i}. {dlabel} ({count})", key=key)
         st.session_state.density_filters = [
             dlabel for dlabel, _ in density_summary if st.session_state.get(f"density-filter-{dlabel}", False)
         ]
+        density_filters = set(st.session_state.density_filters)
         with st.expander("per-cluster details", expanded=False):
             for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
-                st.markdown(f"- Cluster **{r['cluster_id']}** : {r['density_label']}")
+                cid = str(int(r["cluster_id"]))
+                if density_filters and r["density_label"] not in density_filters:
+                    continue
+                label = f"• Cluster {cid} : {r['density_label']}"
+                if st.button(label, key=f"density-cluster-{cid}", use_container_width=True):
+                    st.session_state.selected_cluster = cid
         if n_all >= 3:
             st.markdown(f"_Overall density:_ **{overall['density_label']}** ")
 
-    
+
     dist_counts = Counter(r["distribution"] for r in rows)
     dist_summary = sorted(dist_counts.items(), key=lambda x: (-x[1], x[0]))
     st.markdown("- **Cluster Distributions:**")
@@ -796,17 +749,19 @@ with right:
         key = f"distribution-filter-{dist}"
         if key not in st.session_state:
             st.session_state[key] = dist in st.session_state.distribution_filters
-        cols = st.columns([0.8, 0.2])
-        with cols[0]:
-            st.markdown(f"{i}. **{dist}** ({count})")
-        with cols[1]:
-            st.checkbox("select", key=key, label_visibility="collapsed")
+        st.checkbox(f"{i}. {dist} ({count})", key=key)
     st.session_state.distribution_filters = [
         dist for dist, _ in dist_summary if st.session_state.get(f"distribution-filter-{dist}", False)
     ]
+    distribution_filters = set(st.session_state.distribution_filters)
     with st.expander("per-cluster details", expanded=False):
         for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
-            st.markdown(f"- Cluster **{r['cluster_id']}** : {r['distribution']}")
+            cid = str(int(r["cluster_id"]))
+            if distribution_filters and r["distribution"] not in distribution_filters:
+                continue
+            label = f"• Cluster {cid} : {r['distribution']}"
+            if st.button(label, key=f"dist-cluster-{cid}", use_container_width=True):
+                st.session_state.selected_cluster = cid
     if n_all >= 3:
         st.markdown(f"_Overall distribution:_ **{overall['distribution']}** ")
 
@@ -834,6 +789,9 @@ with right:
                 "colormap": cmap_choice,
             }
 
+# refresh filters after right column interactions for plotting
+filters_active = bool(shape_filters or density_filters or distribution_filters)
+
 # ---------------- Left panel: t-SNE scatter ----------------
 with left:
     PALETTE = [
@@ -845,12 +803,13 @@ with left:
     uniq = sorted(pd.unique(labels_as_str))
     color_map = {lab: PALETTE[i % len(PALETTE)] for i, lab in enumerate(uniq)}
 
-    shape_filters = set(st.session_state.get("shape_filters", []))
-    density_filters = set(st.session_state.get("density_filters", []))
-    distribution_filters = set(st.session_state.get("distribution_filters", []))
-    filters_active = bool(shape_filters or density_filters or distribution_filters)
-
     info_by_lab = {str(r["cluster_id"]): r for r in rows}
+
+    def label_sort_key(val: str):
+        s = str(val)
+        if s.lstrip("-").isdigit():
+            return (0, int(s))
+        return (1, s)
 
     def matches_filters(lab: str) -> bool:
         if not filters_active:
@@ -867,22 +826,34 @@ with left:
             conds.append(r["distribution"] in distribution_filters)
         return any(conds) if conds else False
 
+    def matches_density(lab: str) -> bool:
+        if not density_filters:
+            return False
+        r = info_by_lab.get(lab)
+        return bool(r and r["density_label"] in density_filters)
+
     fig = go.Figure()
 
-    for lab in sorted(uniq, key=lambda x: int(x) if x.isdigit() else x):
+    for lab in sorted(uniq, key=label_sort_key):
+        pts = X2d[labels_as_str == lab]
+        base_hex = color_map[lab]
+        poly = make_cluster_polygon(pts, alpha)
+        info = info_by_lab.get(lab)
+
+        # 1) Polygon fill if selected by any filter
         if matches_filters(lab):
-            pts = X2d[labels_as_str == lab]
+            # Highlight by shading only; density rings are handled separately for density filters.
             if pts.shape[0] >= 3:
                 for t in polygon_fill_traces_for_points(
                     pts=pts,
-                    base_hex=color_map[lab],
+                    base_hex=base_hex,
                     fill_alpha=float(shade_alpha),
                     alpha_param=alpha,
                 ):
                     t.update(legendgroup=f"cluster-{lab}", showlegend=False, hoverinfo="skip")
                     fig.add_trace(t)
             else:
-                highlight_hex = lighten_hex(color_map[lab], 0.5)
+                highlight_hex = lighten_hex(base_hex, 0.5)
                 fig.add_trace(
                     go.Scattergl(
                         x=pts[:, 0],
@@ -900,24 +871,13 @@ with left:
                         ),
                     )
                 )
-            if density_filters:
-                info = info_by_lab.get(lab)
-                if info and info["density_label"] in density_filters:
-                    poly = make_cluster_polygon(pts, alpha)
-                    # KDE contour rings visualize intra-cluster density distribution for selected density classes only.
-                    # Each contour ring (60%, 80%, 95%) represents a Highest Density Region.
-                    add_kde_contours_for_cluster(
-                        fig,
-                        pts,
-                        base_hex=color_map[lab],
-                        poly=poly,
-                        levels=(0.6, 0.8, 0.95),
-                    )
 
-    for lab in sorted(uniq, key=lambda x: int(x) if x.isdigit() else x):
-        pts = X2d[labels_as_str == lab]
+        # 2) Hull-based density rings (only when density filters active and cluster matches)
+        if density_filters and info and info.get("density_label") in density_filters:
+            add_simple_density_rings(fig, pts, base_hex=base_hex, alpha_scale=1.0)
+
+        # 3) Scatter points
         highlighted = matches_filters(lab)
-        base_hex = color_map[lab]
         marker_color = lighten_hex(base_hex, 0.45) if highlighted else base_hex
         marker = dict(
             size=8 if highlighted else 5,
@@ -936,6 +896,46 @@ with left:
                 legendgroup=f"cluster-{lab}",
             )
         )
+
+    selected_lab = st.session_state.selected_cluster
+    if selected_lab is not None:
+        pts = X2d[labels_as_str == str(selected_lab)]
+
+        if pts.shape[0] >= 3:
+            # Outline + glow highlight for selected cluster
+            hull = ConvexHull(pts)
+            order = hull.vertices
+            x = pts[order, 0].tolist() + [pts[order[0], 0]]
+            y = pts[order, 1].tolist() + [pts[order[0], 1]]
+
+            fig.add_trace(
+                go.Scatter(
+                    x=x, y=y,
+                    mode="lines",
+                    line=dict(width=4, color="#CC4444"),
+                    fill="toself",
+                    fillcolor="rgba(255,0,0,0.25)",
+                    hoverinfo="skip",
+                    showlegend=False,
+                    name="selected-outline",
+                )
+            )
+
+        elif pts.shape[0] > 0:
+            fig.add_trace(
+                go.Scattergl(
+                    x=pts[:, 0], y=pts[:, 1],
+                    mode="markers",
+                    hoverinfo="skip",
+                    showlegend=False,
+                    marker=dict(
+                        size=22,
+                        color="rgba(255,77,79,0.35)",
+                        line=dict(width=4, color="#E57373"),
+
+                    ),
+                )
+            )
 
     title_suffix = " — Highlighting selections" if filters_active else ""
     fig.update_layout(
