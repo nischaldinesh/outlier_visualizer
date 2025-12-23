@@ -67,3 +67,32 @@ All clustering, shapes, densities, and distribution summaries are computed **on 
 - **Means:** Concavity of the polygon that wraps cluster points.
 - **Increase:** Smoother, hull‑like boundary (area increases, so density decreses).
 - **Decrease:** More concave/tight boundary (area decreses, so density increses).
+
+### Cluster Density (k-NN based)
+**Means:** How tightly points are packed within a cluster in the 2D t-SNE space.
+
+**Computation:**
+- For each point, the distance to its *k-th nearest neighbor* is computed.
+- Density is defined as the **inverse of this distance**, averaged over all points in the cluster.
+- Smaller distances → higher density; larger distances → lower density.
+
+
+### Density: k (Number of Neighbors)
+**Means:** Controls the locality used for density estimation.
+
+**Selection:**
+- Chosen adaptively based on dataset size and dimensionality.
+- Smaller datasets → smaller *k* (more local sensitivity).
+- Larger or higher-dimensional datasets → larger *k* (more stable density).
+
+
+### Density Labels (Sparse / Moderate / Dense)
+**Means:** Qualitative grouping of clusters based on computed density values.
+
+**Method:**
+- Density values across clusters are grouped using quantile-based binning.
+- If variation is low, a binary split is used for stability.
+
+**Use:**
+- Enables filtering clusters by density.
+- Supports comparison of algorithm behavior across different density conditions.
