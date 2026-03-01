@@ -11,7 +11,6 @@ from sklearn.neighbors import NearestNeighbors
 from sklearn.manifold import TSNE
 from scipy.spatial import ConvexHull
 
-
 import matplotlib.pyplot as plt
 from scipy.interpolate import RBFInterpolator
 from scipy.ndimage import gaussian_filter
@@ -19,12 +18,13 @@ from scipy.ndimage import gaussian_filter
 try:
     import alphashape
     from shapely.ops import unary_union
-    from shapely.geometry import MultiPolygon, Polygon
+    from shapely.geometry import MultiPolygon, Polygon, Point
 except Exception:
     alphashape = None
     unary_union = None
     MultiPolygon = None
     Polygon = None
+    Point = None
 
 import importlib
 try:
@@ -32,10 +32,9 @@ try:
 except Exception:
     detectors = None
 
-
 # -------------------- Helper Functions --------------------
 
-def auto_eps(X2d: np.ndarray, k: int = 10, q: float = 95.0) -> float:
+def auto_eps(X2d: np.ndarray, k: int = 10, q: float = 85.0) -> float:
     k = min(k, len(X2d) - 1) if len(X2d) > 1 else 1
     if k < 1:
         return 0.5
@@ -47,13 +46,11 @@ def auto_eps(X2d: np.ndarray, k: int = 10, q: float = 95.0) -> float:
         eps = float(np.median(kth[kth > 0])) if np.any(kth > 0) else 0.5
     return eps
 
-
 def clamp_perplexity(perp: float, n: int) -> float:
     if n <= 3:
         return 1.0
     upper = max(2.0, (n - 1) / 3.0)
     return float(np.clip(perp, 2.0, upper))
-
 
 def tsne_embed(X_std: np.ndarray, random_state: int, perplexity: float, metric: str) -> np.ndarray:
     import inspect
@@ -80,11 +77,9 @@ def tsne_embed(X_std: np.ndarray, random_state: int, perplexity: float, metric: 
     tsne = TSNE(**kwargs)
     return tsne.fit_transform(X_std)
 
-
 def convex_hull_poly(points: np.ndarray) -> np.ndarray:
     hull = ConvexHull(points)
     return points[hull.vertices]
-
 
 def alpha_shape_polygon(points: np.ndarray, alpha: Optional[float] = None):
     if alphashape is None:
@@ -106,7 +101,6 @@ def alpha_shape_polygon(points: np.ndarray, alpha: Optional[float] = None):
         hull_pts = convex_hull_poly(points)
         return geom.Polygon(hull_pts)
 
-
 def polygon_area_perimeter(poly) -> Tuple[float, float, int]:
     if MultiPolygon and isinstance(poly, MultiPolygon):
         poly = unary_union(poly)
@@ -118,7 +112,6 @@ def polygon_area_perimeter(poly) -> Tuple[float, float, int]:
     elif getattr(poly, "geom_type", "") == "MultiPolygon":
         holes = sum(len(g.interiors) for g in poly.geoms)
     return area, perim, holes
-
 
 def shape_metrics_2d(points: np.ndarray, alpha: Optional[float] = None) -> Dict[str, float]:
     try:
@@ -141,7 +134,6 @@ def shape_metrics_2d(points: np.ndarray, alpha: Optional[float] = None) -> Dict[
     return {"solidity": solidity, "compactness": compactness,
             "area_alpha": area_a, "area_hull": area_h}
 
-
 def aspect_ratio_from_cov(points: np.ndarray) -> float:
     if points.shape[0] < 2:
         return 1.0
@@ -149,7 +141,6 @@ def aspect_ratio_from_cov(points: np.ndarray) -> float:
     cov = np.cov(centered, rowvar=False)
     vals = np.clip(np.linalg.eigvals(cov).real, 1e-12, None)
     return float(np.sqrt(vals.max() / vals.min()))
-
 
 def pca_var_ratio(points: np.ndarray) -> float:
     if points.shape[0] < 2:
@@ -159,7 +150,6 @@ def pca_var_ratio(points: np.ndarray) -> float:
     vals = np.clip(np.linalg.eigvals(cov).real, 1e-12, None)
     vals_sorted = np.sort(vals)[::-1]
     return float(vals_sorted[0] / (vals_sorted.sum() + 1e-12))
-
 
 def poly_r2(x: np.ndarray, y: np.ndarray, deg: int) -> float:
     x = np.asarray(x).ravel(); y = np.asarray(y).ravel()
@@ -181,7 +171,6 @@ def poly_r2(x: np.ndarray, y: np.ndarray, deg: int) -> float:
         except Exception:
             return 0.0
 
-
 def classify_shape(solidity: float, aspect_ratio: float) -> str:
     if solidity < 0.85:
         return "concave/irregular"
@@ -190,20 +179,6 @@ def classify_shape(solidity: float, aspect_ratio: float) -> str:
     if aspect_ratio <= 3.0:
         return "elliptical"
     return "elongated"
-
-
-def classify_density(d: float) -> str:
-    if d > 15:
-        return "Extremely Dense"
-    elif d > 8:
-        return "Dense"
-    elif d > 3:
-        return "Moderate"
-    elif d > 1:
-        return "Sparse"
-    else:
-        return "Very Sparse"
-
 
 # ---------------- NEW: Distribution typing ----------------
 DIST_RANDOM = "Random"
@@ -230,7 +205,6 @@ def classify_distribution_local(points: np.ndarray) -> str:
         return DIST_MANIFOLD
     return DIST_RANDOM
 
-
 def make_cluster_polygon(points: np.ndarray, alpha: Optional[float]) -> Optional[Polygon]:
     if Polygon is None:
         return None
@@ -245,7 +219,6 @@ def make_cluster_polygon(points: np.ndarray, alpha: Optional[float]) -> Optional
         return Polygon(points[order])
     except Exception:
         return None
-
 
 def detect_overlaps(cluster_points: Dict[str, np.ndarray], alpha: Optional[float]) -> set:
     ids = sorted(cluster_points.keys(), key=lambda z: int(z))
@@ -288,13 +261,11 @@ def detect_overlaps(cluster_points: Dict[str, np.ndarray], alpha: Optional[float
 
     return overlapped
 
-
 def build_groups(labels_array):
     groups = {}
     for i, cid in enumerate(labels_array):
         groups.setdefault(str(int(cid)), []).append(i)
     return groups
-
 
 def hex_to_rgba(hex_color: str, alpha: float) -> str:
     hex_color = hex_color.lstrip("#")
@@ -305,6 +276,59 @@ def hex_to_rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r},{g},{b},{a})"
 
 
+def lighten_hex(hex_color: str, amount: float = 0.35) -> str:
+    """Blend color toward white to create a highlight variant."""
+    hex_color = hex_color.lstrip("#")
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    amount = float(np.clip(amount, 0.0, 1.0))
+    r = int(r + (255 - r) * amount)
+    g = int(g + (255 - g) * amount)
+    b = int(b + (255 - b) * amount)
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def add_simple_density_rings(
+    fig: go.Figure,
+    pts: np.ndarray,
+    base_hex: str,
+    alpha_scale: float = 1.0,
+) -> None:
+    """
+    Draw layered translucent rings by expanding the convex hull.
+    Mimics halo contours without altering density math.
+    """
+    if fig is None or pts is None or pts.shape[0] < 3:
+        return
+
+    hull = ConvexHull(pts)
+    hull_pts = pts[hull.vertices]
+    cx = float(np.mean(hull_pts[:, 0])); cy = float(np.mean(hull_pts[:, 1]))
+
+    scale_factors = [1.05, 1.15, 1.25]
+    base_alphas = [0.32, 0.20, 0.12]
+    color_steps = [lighten_hex(base_hex, amt) for amt in (0.15, 0.35, 0.55)]
+    alphas = [float(np.clip(a * alpha_scale, 0.02, 0.8)) for a in base_alphas]
+
+    for scale, alpha, ring_hex in zip(scale_factors, alphas, color_steps):
+        xs = (hull_pts[:, 0] - cx) * scale + cx
+        ys = (hull_pts[:, 1] - cy) * scale + cy
+        xs = xs.tolist() + [xs[0]]
+        ys = ys.tolist() + [ys[0]]
+        fig.add_trace(
+            go.Scatter(
+                x=xs,
+                y=ys,
+                mode="lines",
+                fill="toself",
+                fillcolor=hex_to_rgba(ring_hex, alpha),
+                line=dict(width=1, color=hex_to_rgba(ring_hex, alpha * 0.8)),
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
 def polygon_fill_traces_for_points(
     pts: np.ndarray,
     base_hex: str,
@@ -314,62 +338,83 @@ def polygon_fill_traces_for_points(
     traces: List[go.Scatter] = []
     if pts.shape[0] < 3:
         return traces
+    # Always use ConvexHull for shading to keep it tight and minimal.
+    hull = ConvexHull(pts)
+    order = hull.vertices
+    x = pts[order, 0].tolist() + [pts[order[0], 0]]
+    y = pts[order, 1].tolist() + [pts[order[0], 1]]
 
-    poly = None
-    if alphashape is not None and Polygon is not None:
-        try:
-            poly = alpha_shape_polygon(pts, alpha=alpha_param)
-        except Exception:
-            poly = None
+    # Keep shading very light.
+    alpha_use = float(np.clip(fill_alpha, 0.0, 0.12))
 
-    if poly is None or (hasattr(poly, "is_empty") and poly.is_empty):
-        hull = ConvexHull(pts)
-        order = hull.vertices
-        x = pts[order, 0].tolist() + [pts[order[0], 0]]
-        y = pts[order, 1].tolist() + [pts[order[0], 1]]
-        traces.append(
-            go.Scatter(
-                x=x, y=y, mode="lines",
-                fill="toself",
-                fillcolor=hex_to_rgba(base_hex, fill_alpha),
-                line=dict(width=0),
-                hoverinfo="skip",
-                showlegend=False,
-                name="_region",
-            )
+    traces.append(
+        go.Scatter(
+            x=x, y=y, mode="lines",
+            fill="toself",
+            fillcolor=hex_to_rgba(base_hex, alpha_use),
+            line=dict(width=0),
+            hoverinfo="skip",
+            showlegend=False,
+            name="_region",
         )
-        return traces
-
-    polys: Iterable[Polygon]
-    if MultiPolygon and isinstance(poly, MultiPolygon):
-        if unary_union is not None:
-            poly = unary_union(poly)
-        polys = getattr(poly, "geoms", [])
-    else:
-        polys = [poly]
-
-    for p in polys:
-        ext = p.exterior.coords.xy
-        x = list(ext[0]); y = list(ext[1])
-        traces.append(
-            go.Scatter(
-                x=x, y=y, mode="lines",
-                fill="toself",
-                fillcolor=hex_to_rgba(base_hex, fill_alpha),
-                line=dict(width=0),
-                hoverinfo="skip",
-                showlegend=False,
-                name="_region",
-            )
-        )
+    )
     return traces
+
+
+def local_k_density(points: np.ndarray, k: int = 10) -> float:
+    """
+    Estimate intra-cluster density via inverse k-th neighbor distance.
+    """
+    n = points.shape[0]
+    if n <= 1:
+        return 0.0
+    k = min(k, n - 1)
+    if k < 1:
+        return 0.0
+    nbrs = NearestNeighbors(n_neighbors=k + 1).fit(points)
+    dists, _ = nbrs.kneighbors(points)
+    kth = dists[:, -1]
+    local = 1.0 / (kth + 1e-9)
+    return float(np.mean(local))
+
+
+def adaptive_density_k(n_samples: int, n_features: int) -> int:
+    """
+    Choose k adaptively based on dataset size and dimensionality.
+    """
+    if n_samples < 2000:
+        k = int(5 + n_features / 4.0)
+    elif n_samples < 10000:
+        k = int(10 + n_features / 3.0)
+    else:
+        k = int(20 + n_features / 2.0)
+    return int(np.clip(k, 3, 30))
 
 
 # -------------------- Streamlit UI --------------------
 
 st.set_page_config(page_title="Comparative Analytical Framework", layout="wide")
 st.title("Comparative Analytical Framework for Outlier Detection Algorithms")
-
+st.markdown(
+    """
+    <style>
+    div[data-testid="stButton"] button {
+        width: 100%;
+        border: none;
+        background: transparent;
+        color: inherit;
+        padding: 0.1rem 0.2rem;
+        display: flex;
+        justify-content: flex-start;
+        text-align: left;
+    }
+    div[data-testid="stButton"] button:hover {
+        background-color: rgba(253, 224, 71, 0.12);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 if "shape_filters" not in st.session_state:
     st.session_state.shape_filters = []
@@ -379,6 +424,8 @@ if "distribution_filters" not in st.session_state:
     st.session_state.distribution_filters = []
 if "show_explore" not in st.session_state:
     st.session_state.show_explore = False
+if "selected_cluster" not in st.session_state:
+    st.session_state.selected_cluster = None
 
 with st.sidebar:
     st.header("Upload & Settings")
@@ -462,17 +509,22 @@ scaler = StandardScaler()
 X_std = scaler.fit_transform(X.values)
 X2d = tsne_embed(X_std=X_std, random_state=int(seed), perplexity=float(tsne_perp), metric=tsne_metric)
 
-# -------- RELABEL to 1-based positive IDs --------
-uniq_order = sorted(pd.unique(labels_used))
-if -1 in uniq_order:
-    uniq_order = [l for l in uniq_order if l != -1] + [-1]
-id_map = {old: i for i, old in enumerate(uniq_order, start=1)}
-labels_relabeled = np.array([id_map[int(l)] for l in labels_used], dtype=int)
+# -------- RELABEL to 1-based positive IDs (preserve noise = -1, keep original order) --------
+uniq_clusters = sorted([l for l in pd.unique(labels_used) if l != -1])
+id_map = {old: i for i, old in enumerate(uniq_clusters, start=1)}
+labels_relabeled = np.array([
+    id_map[l] if l != -1 else -1
+    for l in labels_used
+], dtype=int)
 
 clusters = build_groups(labels_relabeled)
+noise_key = "-1"
+noise_idxs = clusters.pop(noise_key, [])  # drop noise points from cluster analysis
 if not clusters:
     st.warning("No clusters found.")
     st.stop()
+
+k_density = adaptive_density_k(X.shape[0], X.shape[1])
 
 # ---------------- Per-cluster analysis ----------------
 rows = []
@@ -490,17 +542,99 @@ for cid, idxs in clusters.items():
         ar = aspect_ratio_from_cov(pts)
         metrics = shape_metrics_2d(pts, alpha=alpha)
         shape = classify_shape(metrics["solidity"], ar)
-        area = metrics["area_alpha"]
-        density_val = npts / area if area > 0 else 0.0
+        density_val = local_k_density(pts, k=k_density)
         dist_type = classify_distribution_local(pts)
 
     rows.append({
         "cluster_id": int(cid),
         "shape": shape,
         "density_val": density_val,
-        "density_label": classify_density(density_val),
         "distribution": dist_type
     })
+
+# --- Adaptive density classification using coefficient of variation ---
+density_classifier: Dict[str, object] = {"mode": "none", "edges": None, "labels": []}
+if rows:
+    density_values = np.nan_to_num(
+        np.array([r["density_val"] for r in rows], dtype=float),
+        nan=0.0,
+    )
+    unique_vals = np.unique(density_values)
+    if unique_vals.size == 1:
+        assigned = ["Moderate"] * len(density_values)
+        density_classifier = {"mode": "flat", "edges": None, "labels": ["Moderate"]}
+    else:
+        mean_density = float(np.mean(density_values))
+        std_density = float(np.std(density_values))
+        variation = 0.0 if abs(mean_density) < 1e-9 else std_density / abs(mean_density)
+
+        target_bins = 3 if (variation >= 0.2 and unique_vals.size >= 3) else 2
+        labels_catalog = {2: ["Sparse", "Dense"], 3: ["Sparse", "Moderate", "Dense"]}
+
+        try:
+            qcut_res, bin_edges = pd.qcut(
+                density_values,
+                q=target_bins,
+                retbins=True,
+                duplicates="drop",
+            )
+        except ValueError:
+            qcut_res, bin_edges = None, None
+
+        actual_bins = (len(bin_edges) - 1) if bin_edges is not None else 0
+        if actual_bins <= 0:
+            qcut_res = None
+
+        if qcut_res is None:
+            # Fallback to binary split around the median.
+            median_thr = float(np.median(density_values))
+            assigned = ["Sparse" if v <= median_thr else "Dense" for v in density_values]
+            density_classifier = {
+                "mode": "binary",
+                "edges": [density_values.min(), median_thr, density_values.max()],
+                "labels": ["Sparse", "Dense"],
+            }
+        else:
+            actual_bins = min(actual_bins, target_bins)
+            if actual_bins <= 1:
+                assigned = ["Moderate"] * len(density_values)
+                density_classifier = {"mode": "flat", "edges": None, "labels": ["Moderate"]}
+            else:
+                labels_use = labels_catalog[actual_bins]
+                codes = pd.Series(qcut_res).cat.codes.to_numpy()
+                assigned = [
+                    labels_use[c] if 0 <= c < len(labels_use) else labels_use[-1]
+                    for c in codes
+                ]
+                density_classifier = {
+                    "mode": f"{actual_bins}-quantile",
+                    "edges": bin_edges[: actual_bins + 1],
+                    "labels": labels_use,
+                }
+
+    for r, lbl in zip(rows, assigned):
+        r["density_label"] = lbl
+else:
+    density_values = np.array([], dtype=float)
+
+
+def overall_density_label(val: float) -> str:
+    mode = density_classifier.get("mode", "none")
+    if mode == "none":
+        return "N/A"
+    if mode == "flat":
+        return "Moderate"
+    edges = density_classifier.get("edges")
+    labels = density_classifier.get("labels", [])
+    if edges is None or len(labels) == 0:
+        return "N/A"
+    edges_arr = np.asarray(edges, dtype=float)
+    if edges_arr.size < 2:
+        return labels[-1] if labels else "N/A"
+    for upper, label in zip(edges_arr[1:], labels):
+        if val <= upper:
+            return label
+    return labels[-1]
 
 # ---------------- Overall dataset analysis (full X2d) ----------------
 overall = {
@@ -517,8 +651,7 @@ if n_all >= 3:
     ar_all = aspect_ratio_from_cov(all_pts)
     metrics_all = shape_metrics_2d(all_pts, alpha=alpha)
     shape_all = classify_shape(metrics_all["solidity"], ar_all)
-    area_all = metrics_all["area_alpha"]
-    density_all = n_all / area_all if area_all > 0 else 0.0
+    density_all = local_k_density(all_pts, k=k_density)
 
     global_dist = classify_distribution_local(all_pts)
 
@@ -527,11 +660,17 @@ if n_all >= 3:
         "solidity": float(metrics_all["solidity"]),
         "aspect_ratio": float(ar_all),
         "density_val": float(density_all),
-        "density_label": classify_density(density_all),
+        "density_label": overall_density_label(float(density_all)),
         "distribution": global_dist,
     })
 
 # ---------------- Detect overlaps & override overall if needed ----------------
+# prepare filter selections for both columns
+shape_filters = set(st.session_state.get("shape_filters", []))
+density_filters = set(st.session_state.get("density_filters", []))
+distribution_filters = set(st.session_state.get("distribution_filters", []))
+filters_active = bool(shape_filters or density_filters or distribution_filters)
+
 overlap_ids = detect_overlaps(cluster_points, alpha=alpha)
 if overlap_ids:
     for r in rows:
@@ -563,17 +702,19 @@ with right:
             key = f"shape-filter-{shape}"
             if key not in st.session_state:
                 st.session_state[key] = shape in st.session_state.shape_filters
-            cols = st.columns([0.8, 0.2])
-            with cols[0]:
-                st.markdown(f"{i}. **{shape.capitalize()}** ({count})")
-            with cols[1]:
-                st.checkbox("select", key=key, label_visibility="collapsed")
+            st.checkbox(f"{i}. {shape.capitalize()} ({count})", key=key)
         st.session_state.shape_filters = [
             shape for shape, _ in shape_summary if st.session_state.get(f"shape-filter-{shape}", False)
         ]
+        shape_filters = set(st.session_state.shape_filters)
         with st.expander("per-cluster details", expanded=False):
             for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
-                st.markdown(f"- Cluster **{r['cluster_id']}** : {r['shape']}")
+                cid = str(int(r["cluster_id"]))
+                if shape_filters and r["shape"] not in shape_filters:
+                    continue
+                label = f"• Cluster {cid} : {r['shape']}"
+                if st.button(label, key=f"shape-cluster-{cid}", use_container_width=True):
+                    st.session_state.selected_cluster = cid
         if n_all >= 3:
             st.markdown(f"_Overall shape:_ **{overall['shape'].capitalize()}** ")
 
@@ -584,21 +725,23 @@ with right:
             key = f"density-filter-{dlabel}"
             if key not in st.session_state:
                 st.session_state[key] = dlabel in st.session_state.density_filters
-            cols = st.columns([0.8, 0.2])
-            with cols[0]:
-                st.markdown(f"{i}. **{dlabel}** ({count})")
-            with cols[1]:
-                st.checkbox("select", key=key, label_visibility="collapsed")
+            st.checkbox(f"{i}. {dlabel} ({count})", key=key)
         st.session_state.density_filters = [
             dlabel for dlabel, _ in density_summary if st.session_state.get(f"density-filter-{dlabel}", False)
         ]
+        density_filters = set(st.session_state.density_filters)
         with st.expander("per-cluster details", expanded=False):
             for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
-                st.markdown(f"- Cluster **{r['cluster_id']}** : {r['density_label']}")
+                cid = str(int(r["cluster_id"]))
+                if density_filters and r["density_label"] not in density_filters:
+                    continue
+                label = f"• Cluster {cid} : {r['density_label']}"
+                if st.button(label, key=f"density-cluster-{cid}", use_container_width=True):
+                    st.session_state.selected_cluster = cid
         if n_all >= 3:
             st.markdown(f"_Overall density:_ **{overall['density_label']}** ")
 
-    
+
     dist_counts = Counter(r["distribution"] for r in rows)
     dist_summary = sorted(dist_counts.items(), key=lambda x: (-x[1], x[0]))
     st.markdown("- **Cluster Distributions:**")
@@ -606,17 +749,19 @@ with right:
         key = f"distribution-filter-{dist}"
         if key not in st.session_state:
             st.session_state[key] = dist in st.session_state.distribution_filters
-        cols = st.columns([0.8, 0.2])
-        with cols[0]:
-            st.markdown(f"{i}. **{dist}** ({count})")
-        with cols[1]:
-            st.checkbox("select", key=key, label_visibility="collapsed")
+        st.checkbox(f"{i}. {dist} ({count})", key=key)
     st.session_state.distribution_filters = [
         dist for dist, _ in dist_summary if st.session_state.get(f"distribution-filter-{dist}", False)
     ]
+    distribution_filters = set(st.session_state.distribution_filters)
     with st.expander("per-cluster details", expanded=False):
         for r in sorted(rows, key=lambda x: int(x["cluster_id"])):
-            st.markdown(f"- Cluster **{r['cluster_id']}** : {r['distribution']}")
+            cid = str(int(r["cluster_id"]))
+            if distribution_filters and r["distribution"] not in distribution_filters:
+                continue
+            label = f"• Cluster {cid} : {r['distribution']}"
+            if st.button(label, key=f"dist-cluster-{cid}", use_container_width=True):
+                st.session_state.selected_cluster = cid
     if n_all >= 3:
         st.markdown(f"_Overall distribution:_ **{overall['distribution']}** ")
 
@@ -644,6 +789,9 @@ with right:
                 "colormap": cmap_choice,
             }
 
+# refresh filters after right column interactions for plotting
+filters_active = bool(shape_filters or density_filters or distribution_filters)
+
 # ---------------- Left panel: t-SNE scatter ----------------
 with left:
     PALETTE = [
@@ -655,12 +803,13 @@ with left:
     uniq = sorted(pd.unique(labels_as_str))
     color_map = {lab: PALETTE[i % len(PALETTE)] for i, lab in enumerate(uniq)}
 
-    shape_filters = set(st.session_state.get("shape_filters", []))
-    density_filters = set(st.session_state.get("density_filters", []))
-    distribution_filters = set(st.session_state.get("distribution_filters", []))
-    filters_active = bool(shape_filters or density_filters or distribution_filters)
-
     info_by_lab = {str(r["cluster_id"]): r for r in rows}
+
+    def label_sort_key(val: str):
+        s = str(val)
+        if s.lstrip("-").isdigit():
+            return (0, int(s))
+        return (1, s)
 
     def matches_filters(lab: str) -> bool:
         if not filters_active:
@@ -677,27 +826,66 @@ with left:
             conds.append(r["distribution"] in distribution_filters)
         return any(conds) if conds else False
 
+    def matches_density(lab: str) -> bool:
+        if not density_filters:
+            return False
+        r = info_by_lab.get(lab)
+        return bool(r and r["density_label"] in density_filters)
+
     fig = go.Figure()
 
-    for lab in sorted(uniq, key=lambda x: int(x) if x.isdigit() else x):
+    for lab in sorted(uniq, key=label_sort_key):
+        pts = X2d[labels_as_str == lab]
+        base_hex = color_map[lab]
+        poly = make_cluster_polygon(pts, alpha)
+        info = info_by_lab.get(lab)
+
+        # 1) Polygon fill if selected by any filter
         if matches_filters(lab):
-            pts = X2d[labels_as_str == lab]
+            # Highlight by shading only; density rings are handled separately for density filters.
             if pts.shape[0] >= 3:
                 for t in polygon_fill_traces_for_points(
                     pts=pts,
-                    base_hex=color_map[lab],
+                    base_hex=base_hex,
                     fill_alpha=float(shade_alpha),
                     alpha_param=alpha,
                 ):
                     t.update(legendgroup=f"cluster-{lab}", showlegend=False, hoverinfo="skip")
                     fig.add_trace(t)
+            else:
+                highlight_hex = lighten_hex(base_hex, 0.5)
+                fig.add_trace(
+                    go.Scattergl(
+                        x=pts[:, 0],
+                        y=pts[:, 1],
+                        mode="markers",
+                        name="",
+                        hoverinfo="skip",
+                        showlegend=False,
+                        legendgroup=f"cluster-{lab}",
+                        marker=dict(
+                            size=18,
+                            symbol="circle",
+                            color=hex_to_rgba(highlight_hex, min(shade_alpha + 0.35, 0.95)),
+                            line=dict(width=2, color="#FFFFFF"),
+                        ),
+                    )
+                )
 
-    for lab in sorted(uniq, key=lambda x: int(x) if x.isdigit() else x):
-        pts = X2d[labels_as_str == lab]
-        marker = dict(size=7 if matches_filters(lab) else 5,
-                      opacity=1.0 if matches_filters(lab) else 0.9,
-                      color=color_map[lab],
-                      line=dict(width=1, color="#FFFFFF") if matches_filters(lab) else None)
+        # 2) Hull-based density rings (only when density filters active and cluster matches)
+        if density_filters and info and info.get("density_label") in density_filters:
+            add_simple_density_rings(fig, pts, base_hex=base_hex, alpha_scale=1.0)
+
+        # 3) Scatter points
+        highlighted = matches_filters(lab)
+        marker_color = lighten_hex(base_hex, 0.45) if highlighted else base_hex
+        marker = dict(
+            size=8 if highlighted else 5,
+            opacity=1.0 if highlighted else 0.85,
+            color=marker_color,
+            line=dict(width=2, color="#0F172A") if highlighted else None,
+            symbol="circle",
+        )
         fig.add_trace(
             go.Scattergl(
                 x=pts[:, 0], y=pts[:, 1],
@@ -708,6 +896,46 @@ with left:
                 legendgroup=f"cluster-{lab}",
             )
         )
+
+    selected_lab = st.session_state.selected_cluster
+    if selected_lab is not None:
+        pts = X2d[labels_as_str == str(selected_lab)]
+
+        if pts.shape[0] >= 3:
+            # Outline + glow highlight for selected cluster
+            hull = ConvexHull(pts)
+            order = hull.vertices
+            x = pts[order, 0].tolist() + [pts[order[0], 0]]
+            y = pts[order, 1].tolist() + [pts[order[0], 1]]
+
+            fig.add_trace(
+                go.Scatter(
+                    x=x, y=y,
+                    mode="lines",
+                    line=dict(width=4, color="#CC4444"),
+                    fill="toself",
+                    fillcolor="rgba(255,0,0,0.25)",
+                    hoverinfo="skip",
+                    showlegend=False,
+                    name="selected-outline",
+                )
+            )
+
+        elif pts.shape[0] > 0:
+            fig.add_trace(
+                go.Scattergl(
+                    x=pts[:, 0], y=pts[:, 1],
+                    mode="markers",
+                    hoverinfo="skip",
+                    showlegend=False,
+                    marker=dict(
+                        size=22,
+                        color="rgba(255,77,79,0.35)",
+                        line=dict(width=4, color="#E57373"),
+
+                    ),
+                )
+            )
 
     title_suffix = " — Highlighting selections" if filters_active else ""
     fig.update_layout(
@@ -804,4 +1032,3 @@ if st.session_state.get("show_explore") and detectors is not None and st.session
             target_col = rows_cols[0][i] if i < 2 else rows_cols[1][i - 2]
             with target_col:
                 render_heatmap_image(scores, f"{algo} — {st.session_state['_explore_opts']['heat_tech']}")
-
